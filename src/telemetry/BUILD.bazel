@@ -72,6 +72,7 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:optional",
         "@io_opentelemetry_cpp//api",
+        "@io_opentelemetry_cpp//exporters/ostream:ostream_metric_exporter",
         "@io_opentelemetry_cpp//sdk:headers",
         "@io_opentelemetry_cpp//sdk/src/logs",
         "@io_opentelemetry_cpp//sdk/src/metrics",

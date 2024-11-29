@@ -124,10 +124,9 @@ def cpp_dependencies():
     maybe(
         http_archive,
         name = "io_opentelemetry_cpp",
-        sha256 = "c61f4c6f820b04b920f35f84a3867cd44138bac4da21d21fbc00645c97e2051e",
-        strip_prefix = "opentelemetry-cpp-1.9.1",
+        strip_prefix = "opentelemetry-cpp-otel-metricfilter-fn",
         urls = [
-            "https://github.com/open-telemetry/opentelemetry-cpp/archive/refs/tags/v1.9.1.zip",
+            "https://github.com/IcySteam/opentelemetry-cpp/archive/refs/heads/otel-metricfilter-fn.zip",
         ],
     )
     maybe(

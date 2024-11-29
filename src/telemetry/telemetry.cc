@@ -14,11 +14,14 @@
 
 #include "telemetry.h"
 
+#include <iostream>
 #include <memory>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
+#include "opentelemetry/exporters/ostream/metric_exporter.h"
 #include "opentelemetry/metrics/provider.h"
 #include "opentelemetry/nostd/shared_ptr.h"
 #include "opentelemetry/sdk/logs/batch_log_record_processor_factory.h"
@@ -27,6 +30,10 @@
 #include "opentelemetry/sdk/logs/logger_provider_factory.h"
 #include "opentelemetry/sdk/logs/simple_log_record_processor.h"
 #include "opentelemetry/sdk/logs/simple_log_record_processor_factory.h"
+#include "opentelemetry/sdk/metrics/export/metric_filter.h"
+#include "opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader_factory.h"
+#include "opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader_options.h"
+#include "opentelemetry/sdk/metrics/instruments.h"
 #include "opentelemetry/sdk/metrics/meter.h"
 #include "opentelemetry/sdk/metrics/view/view_registry.h"
 #include "opentelemetry/sdk/trace/samplers/always_on_factory.h"
@@ -94,6 +101,55 @@ std::unique_ptr<metrics_api::MeterProvider> ConfigurePrivateMetrics(
       std::make_unique<metric_sdk::ViewRegistry>(), std::move(resource));
   provider->AddMetricReader(
       CreatePeriodicExportingMetricReader(options, collector_endpoint));
+
+  opentelemetry::sdk::metrics::MetricFilter::TestMetricFn test_metric_fn =
+      [](const opentelemetry::sdk::instrumentationscope::InstrumentationScope&
+             scope,
+         opentelemetry::nostd::string_view name,
+         const opentelemetry::sdk::metrics::InstrumentType& type,
+         opentelemetry::nostd::string_view unit)
+      -> opentelemetry::sdk::metrics::MetricFilter::MetricFilterResult {
+    if (name.rfind("system.cpu", 0) == 0) {
+      return opentelemetry::sdk::metrics::MetricFilter::MetricFilterResult::
+          kAccept;
+    } else if (name.rfind("system.memory", 0) == 0) {
+      return opentelemetry::sdk::metrics::MetricFilter::MetricFilterResult::
+          kAcceptPartial;
+    }
+    return opentelemetry::sdk::metrics::MetricFilter::MetricFilterResult::kDrop;
+  };
+  opentelemetry::sdk::metrics::MetricFilter::TestAttributesFn
+      test_attributes_fn =
+          [](const opentelemetry::sdk::instrumentationscope::
+                 InstrumentationScope& scope,
+             opentelemetry::nostd::string_view name,
+             const opentelemetry::sdk::metrics::InstrumentType& type,
+             opentelemetry::nostd::string_view unit,
+             const opentelemetry::sdk::metrics::PointAttributes& attributes)
+      -> opentelemetry::sdk::metrics::MetricFilter::AttributesFilterResult {
+    if (attributes.GetAttributes().find("label") !=
+            attributes.GetAttributes().end() &&
+        std::holds_alternative<std::string>(
+            attributes.GetAttributes().at("label"))) {
+      if (std::get<std::string>(attributes.GetAttributes().at("label")) ==
+          "main process") {
+        return opentelemetry::sdk::metrics::MetricFilter::
+            AttributesFilterResult::kDrop;
+      }
+    }
+    return opentelemetry::sdk::metrics::MetricFilter::AttributesFilterResult::
+        kAccept;
+  };
+  auto metric_filter = opentelemetry::sdk::metrics::MetricFilter(
+      test_metric_fn, test_attributes_fn);
+  provider->AddMetricReader(
+      opentelemetry::sdk::metrics::PeriodicExportingMetricReaderFactory::Create(
+          std::make_unique<
+              opentelemetry::exporter::metrics::OStreamMetricExporter>(
+              std::cout,
+              opentelemetry::sdk::metrics::AggregationTemporality::kCumulative),
+          opentelemetry::sdk::metrics::PeriodicExportingMetricReaderOptions{}),
+      metric_filter);
   return provider;
 }
 
