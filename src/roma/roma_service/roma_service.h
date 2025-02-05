@@ -240,9 +240,13 @@ class RomaService {
       remote_fds.push_back(fd_pair[1]);
     }
 
-    native_function_binding_handler_.emplace(&native_function_binding_table_,
-                                             &metadata_storage_, local_fds,
-                                             remote_fds);
+    MetadataStorage<TMetadata>* metadata_ptr = nullptr;
+    if (config_.enable_metadata_storage) {
+      metadata_ptr = &metadata_storage_;
+    }
+    native_function_binding_handler_.emplace(
+        &native_function_binding_table_, metadata_ptr, local_fds, remote_fds,
+        config_.skip_callback_for_cancelled);
 
     NativeFunctionBindingSetup setup{
         .remote_file_descriptors = std::move(remote_fds),
@@ -377,7 +381,11 @@ class RomaService {
           google::scp::core::common::ToString(request_unique_id);
       // Save uuids for later removal in callback_wrapper
       uuids.push_back(uuid_str);
-      request.tags.insert({std::string(kRequestUuid), uuid_str});
+      auto [it, inserted] =
+          request.tags.insert({std::string(kRequestUuid), uuid_str});
+      if (!inserted) {
+        it->second = uuid_str;
+      }
       PS_RETURN_IF_ERROR(
           StoreMetadata(std::move(uuid_str), std::move(request.metadata)));
     }

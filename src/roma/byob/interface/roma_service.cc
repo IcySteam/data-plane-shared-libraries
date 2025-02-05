@@ -29,41 +29,129 @@
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/strings/str_cat.h"
+#include "src/roma/byob/config/config.h"
+#include "src/roma/byob/utility/utils.h"
 
 namespace privacy_sandbox::server_common::byob::internal::roma_service {
 
 LocalHandle::LocalHandle(int pid, std::string_view mounts,
                          std::string_view control_socket_path,
                          std::string_view udf_socket_path,
-                         std::string_view log_dir)
+                         std::string_view socket_dir, std::string_view log_dir,
+                         bool enable_seccomp_filter)
+    : pid_(pid) {
+  // The following block does not run in the parent process.
+  if (pid_ == 0) {
+    PCHECK(::unshare(CLONE_NEWNS) == 0);
+    // Set the process group id to the process id.
+    PCHECK(::setpgid(/*pid=*/0, /*pgid=*/0) == 0);
+    const std::string root_dir =
+        std::filesystem::path(CONTAINER_PATH) / CONTAINER_ROOT_RELPATH;
+    std::vector<std::pair<std::filesystem::path, std::filesystem::path>>
+        sources_and_targets = {
+            {log_dir, "/log_dir"},
+            {socket_dir, "/socket_dir"},
+            // Needs to be mounted for Cancel to work (kill by cmdline)
+            {"/proc", "/proc"},
+            {"/dev", "/dev"}};
+    CHECK_OK(::privacy_sandbox::server_common::byob::SetupPivotRoot(
+        root_dir, /*sources_and_targets_read_only=*/{},
+        /*cleanup_pivot_root_dir=*/false, sources_and_targets,
+        /*remount_root_as_read_only=*/false));
+    const std::string mounts_flag = absl::StrCat("--mounts=", mounts);
+    const std::string seccomp_filter_flag =
+        absl::StrCat("--enable_seccomp_filter=", enable_seccomp_filter);
+    const char* argv[] = {
+        "/server/bin/run_workers",
+        mounts_flag.c_str(),
+        "--control_socket_name=/socket_dir/control.sock",
+        "--udf_socket_name=/socket_dir/byob_rpc.sock",
+        "--log_dir=/log_dir",
+        seccomp_filter_flag.c_str(),
+        nullptr,
+    };
+    const char* envp[] = {
+        kLdLibraryPath.data(),
+        nullptr,
+    };
+    ::execve(argv[0], const_cast<char* const*>(&argv[0]),
+             const_cast<char* const*>(&envp[0]));
+    PLOG(FATAL) << "execve()";
+  }
+}
+LocalHandle::~LocalHandle() {
+  ::kill(pid_, SIGTERM);
+  // Wait for all processes in the process group to exit.
+  uint32_t child_count = 0;
+  while (::waitpid(-pid_, /*wstatus=*/nullptr, /*options=*/0) > 0) {
+    child_count++;
+  }
+  if (child_count == 0) {
+    PLOG(ERROR) << "waitpid unexpectedly didn't wait for any pids";
+  }
+}
+
+NsJailHandle::NsJailHandle(int pid, std::string_view mounts,
+                           std::string_view control_socket_path,
+                           std::string_view udf_socket_path,
+                           std::string_view socket_dir,
+                           std::string container_name, std::string_view log_dir,
+                           std::uint64_t memory_limit_soft,
+                           std::uint64_t memory_limit_hard,
+                           bool enable_seccomp_filter)
     : pid_(pid) {
   // The following block does not run in the parent process.
   if (pid_ == 0) {
     // Set the process group id to the process id.
     PCHECK(::setpgid(/*pid=*/0, /*pgid=*/0) == 0);
-    const std::string run_workers_path = std::filesystem::path(CONTAINER_PATH) /
-                                         CONTAINER_ROOT_RELPATH / "server" /
-                                         "bin" / "run_workers";
-    const std::string mounts_flag =
-        absl::StrCat("--mounts=", mounts.empty() ? LIB_MOUNTS : mounts);
-    const std::string control_socket_name_flag =
-        absl::StrCat("--control_socket_name=", control_socket_path);
-    const std::string udf_socket_name_flag =
-        absl::StrCat("--udf_socket_name=", udf_socket_path);
-    const std::string log_dir_flag = absl::StrCat("--log_dir=", log_dir);
+    const std::string root_dir =
+        std::filesystem::path(CONTAINER_PATH) / CONTAINER_ROOT_RELPATH;
+    const std::string mounts_flag = absl::StrCat("--mounts=", mounts);
+    const std::string seccomp_filter_flag =
+        absl::StrCat("--enable_seccomp_filter=", enable_seccomp_filter);
+    const std::string log_dir_mount = absl::StrCat(log_dir, ":/log_dir");
+    const std::string socket_dir_mount =
+        absl::StrCat(socket_dir, ":/socket_dir");
     const char* argv[] = {
-        run_workers_path.c_str(),
+        "/usr/byob/nsjail/bin/nsjail",
+        "--mode",
+        "o",  // MODE_STANDALONE_ONCE
+        "--chroot",
+        root_dir.data(),
+        "--bindmount",
+        log_dir_mount.c_str(),
+        "--bindmount",
+        socket_dir_mount.c_str(),
+        "--bindmount_ro",
+        "/dev/null",
+        "--disable_rlimits",
+        "--env",
+        kLdLibraryPath.data(),
+        "--forward_signals",
+        "--keep_caps",
+        "--quiet",
+        "--rw",
+        "--seccomp_string",
+        kSeccompBpfPolicy.data(),
+        "--",
+        "/server/bin/run_workers",
+        "--control_socket_name=/socket_dir/control.sock",
+        "--log_dir=/log_dir",
+        "--udf_socket_name=/socket_dir/byob_rpc.sock",
         mounts_flag.c_str(),
-        control_socket_name_flag.c_str(),
-        udf_socket_name_flag.c_str(),
-        log_dir_flag.c_str(),
+        seccomp_filter_flag.c_str(),
         nullptr,
     };
-    ::execve(argv[0], const_cast<char* const*>(&argv[0]), nullptr);
+    const char* envp[] = {
+        "LD_LIBRARY_PATH=/usr/byob/nsjail/lib",
+        nullptr,
+    };
+    ::execve(argv[0], const_cast<char* const*>(&argv[0]),
+             const_cast<char* const*>(&envp[0]));
     PLOG(FATAL) << "execve()";
   }
 }
-LocalHandle::~LocalHandle() {
+NsJailHandle::~NsJailHandle() {
   ::kill(pid_, SIGTERM);
   // Wait for all processes in the process group to exit.
   uint32_t child_count = 0;
@@ -81,7 +169,8 @@ ByobHandle::ByobHandle(int pid, std::string_view mounts,
                        std::string_view socket_dir, std::string container_name,
                        std::string_view log_dir,
                        std::uint64_t memory_limit_soft,
-                       std::uint64_t memory_limit_hard, bool debug_mode)
+                       std::uint64_t memory_limit_hard, bool debug_mode,
+                       bool enable_seccomp_filter)
     : pid_(pid),
       container_name_(container_name.empty() ? "default_roma_container_name"
                                              : std::move(container_name)) {
@@ -89,24 +178,25 @@ ByobHandle::ByobHandle(int pid, std::string_view mounts,
   if (pid_ == 0) {
     // Set the process group id to the process id.
     PCHECK(::setpgid(/*pid=*/0, /*pgid=*/0) == 0);
-    std::filesystem::path container_path =
+    std::filesystem::path container_config_path =
         std::filesystem::path(CONTAINER_PATH) / "config.json";
+    CHECK(std::filesystem::exists(container_config_path));
     PCHECK(::close(STDIN_FILENO) == 0);
     nlohmann::json config;
     {
-      std::ifstream ifs(container_path);
+      std::ifstream ifs(container_config_path);
       config =
           nlohmann::json::parse(std::string(std::istreambuf_iterator<char>(ifs),
                                             std::istreambuf_iterator<char>()));
     }
-    constexpr std::string_view log_dir_mount_point = "/tmp/udf_logs";
     config["root"] = {{"path", CONTAINER_ROOT_RELPATH}};
     config["process"]["args"] = {
         "/server/bin/run_workers",
-        absl::StrCat("--mounts=", mounts.empty() ? LIB_MOUNTS : mounts),
-        absl::StrCat("--control_socket_name=", control_socket_path),
-        absl::StrCat("--udf_socket_name=", udf_socket_path),
-        absl::StrCat("--log_dir=", log_dir_mount_point),
+        absl::StrCat("--mounts=", mounts),
+        "--control_socket_name=/socket_dir/control.sock",
+        "--udf_socket_name=/socket_dir/byob_rpc.sock",
+        "--log_dir=/log_dir",
+        absl::StrCat("--enable_seccomp_filter=", enable_seccomp_filter),
     };
     config["process"]["rlimits"] = {};
     // If a memory limit has been configured, apply it.
@@ -127,13 +217,13 @@ ByobHandle::ByobHandle(int pid, std::string_view mounts,
     config["mounts"] = {
         {
             {"source", socket_dir},
-            {"destination", socket_dir},
+            {"destination", "/socket_dir"},
             {"type", "bind"},
             {"options", {"rbind", "rprivate"}},
         },
         {
             {"source", log_dir},
-            {"destination", log_dir_mount_point},
+            {"destination", "/log_dir"},
             {"type", "bind"},
             {"options", {"rbind", "rprivate"}},
         },
@@ -146,7 +236,7 @@ ByobHandle::ByobHandle(int pid, std::string_view mounts,
       };
     }
     {
-      std::ofstream ofs(container_path);
+      std::ofstream ofs(container_config_path);
       ofs << config.dump();
     }
     PCHECK(::chdir(CONTAINER_PATH) == 0);
@@ -154,7 +244,7 @@ ByobHandle::ByobHandle(int pid, std::string_view mounts,
     // network stack (--network=none), rootless runsc should be side-effect
     // free.
     const char* debug_argv[] = {
-        "/usr/bin/runsc",
+        "/usr/byob/gvisor/bin/runsc",
         // runsc flags
         "--host-uds=all",
         "--ignore-cgroups",
@@ -170,7 +260,7 @@ ByobHandle::ByobHandle(int pid, std::string_view mounts,
         nullptr,
     };
     const char* argv[] = {
-        "/usr/bin/runsc",
+        "/usr/byob/gvisor/bin/runsc",
         // runsc flags
         "--host-uds=all",
         "--ignore-cgroups",
@@ -183,7 +273,7 @@ ByobHandle::ByobHandle(int pid, std::string_view mounts,
     };
     ::execve(argv[0],
              const_cast<char* const*>(debug_mode ? &debug_argv[0] : &argv[0]),
-             nullptr);
+             /*envp=*/nullptr);
     PLOG(FATAL) << "execve()";
   }
 }
@@ -193,9 +283,13 @@ ByobHandle::~ByobHandle() {
     const int pid = ::vfork();
     if (pid == 0) {
       const char* argv[] = {
-          "/usr/bin/runsc", "kill", container_name_.c_str(), "SIGTERM", nullptr,
+          "/usr/byob/gvisor/bin/runsc",
+          "kill",
+          container_name_.c_str(),
+          "SIGTERM",
+          nullptr,
       };
-      ::execve(argv[0], const_cast<char* const*>(&argv[0]), nullptr);
+      ::execve(argv[0], const_cast<char* const*>(&argv[0]), /*envp=*/nullptr);
       PLOG(FATAL) << "execve()";
     }
     ::waitpid(pid, nullptr, /*options=*/0);
@@ -209,7 +303,7 @@ ByobHandle::~ByobHandle() {
     PLOG(ERROR) << "waitpid unexpectedly didn't wait for any pids";
   }
   const char* argv[] = {
-      "/usr/bin/runsc",
+      "/usr/byob/gvisor/bin/runsc",
       // args
       "delete",
       "-force",
@@ -219,7 +313,8 @@ ByobHandle::~ByobHandle() {
   };
   const int pid = ::vfork();
   if (pid == 0) {
-    ::execve(argv[0], const_cast<char* const*>(&argv[0]), /*envp=*/nullptr);
+    ::execve(argv[0], const_cast<char* const*>(&argv[0]),
+             /*envp=*/nullptr);
     PLOG(FATAL) << "execve()";
   }
   ::waitpid(pid, nullptr, /*options=*/0);

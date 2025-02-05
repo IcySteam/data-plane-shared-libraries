@@ -41,6 +41,7 @@
 #include "src/core/common/uuid/uuid.h"
 #include "src/roma/byob/dispatcher/dispatcher.grpc.pb.h"
 #include "src/roma/byob/dispatcher/dispatcher.pb.h"
+#include "src/roma/byob/dispatcher/interface.h"
 #include "src/util/execution_token.h"
 #include "src/util/status_macro/status_util.h"
 
@@ -54,6 +55,8 @@ using ::privacy_sandbox::server_common::byob::DeleteBinaryRequest;
 using ::privacy_sandbox::server_common::byob::DeleteBinaryResponse;
 using ::privacy_sandbox::server_common::byob::LoadBinaryRequest;
 using ::privacy_sandbox::server_common::byob::LoadBinaryResponse;
+
+constexpr absl::Duration kWorkerCreationTimeout = absl::Seconds(10);
 
 absl::StatusOr<std::string> Read(int fd, int size) {
   std::string buffer(size, '\0');
@@ -73,22 +76,18 @@ absl::StatusOr<std::string> Read(int fd, int size) {
 }  // namespace
 
 Dispatcher::~Dispatcher() {
-  {
-    absl::MutexLock lock(&mu_);
-    mu_.Await(absl::Condition(
-        +[](int* i) { return *i == 0; }, &executor_threads_in_flight_));
-  }
   ::shutdown(listen_fd_, SHUT_RDWR);
   {
     absl::MutexLock lock(&mu_);
+    for (auto& [_, request_metadatas] : code_token_to_request_metadatas_) {
+      while (!request_metadatas.empty()) {
+        request_metadatas.front()->ready.Notify();
+        request_metadatas.pop();
+      }
+    }
+    code_token_to_request_metadatas_.clear();
     mu_.Await(absl::Condition(
         +[](int* i) { return *i == 0; }, &acceptor_threads_in_flight_));
-  }
-  for (auto& [_, fds_and_tokens] : code_token_to_fds_and_tokens_) {
-    while (!fds_and_tokens.empty()) {
-      ::close(fds_and_tokens.front().fd);
-      fds_and_tokens.pop();
-    }
   }
   ::close(listen_fd_);
 }
@@ -173,7 +172,7 @@ absl::StatusOr<std::string> Dispatcher::LoadBinary(
   request.set_enable_log_egress(enable_log_egress);
   {
     absl::MutexLock lock(&mu_);
-    code_token_to_fds_and_tokens_.insert({code_token, {}});
+    code_token_to_request_metadatas_.insert({code_token, {}});
   }
   grpc::ClientContext context;
   LoadBinaryResponse response;
@@ -181,7 +180,7 @@ absl::StatusOr<std::string> Dispatcher::LoadBinary(
           stub_->LoadBinary(&context, request, &response);
       !status.ok()) {
     absl::MutexLock lock(&mu_);
-    code_token_to_fds_and_tokens_.erase(code_token);
+    code_token_to_request_metadatas_.erase(code_token);
     return privacy_sandbox::server_common::ToAbslStatus(status);
   }
   {
@@ -190,6 +189,21 @@ absl::StatusOr<std::string> Dispatcher::LoadBinary(
   }
   for (int i = 0; i < num_workers; ++i) {
     std::thread(&Dispatcher::AcceptorImpl, this, code_token).detach();
+  }
+  bool workers_have_been_created = false;
+  {
+    auto fn = [&] {
+      mu_.AssertReaderHeld();
+      const auto it = code_token_to_request_metadatas_.find(code_token);
+      return !it->second.empty();
+    };
+    absl::MutexLock l(&mu_);
+    workers_have_been_created =
+        mu_.AwaitWithTimeout(absl::Condition(&fn), kWorkerCreationTimeout);
+  }
+  if (!workers_have_been_created) {
+    Delete(code_token);
+    return absl::InternalError("Worker creation failure.");
   }
   return code_token;
 }
@@ -208,7 +222,7 @@ absl::StatusOr<std::string> Dispatcher::LoadBinaryForLogging(
   request.set_enable_log_egress(true);
   {
     absl::MutexLock lock(&mu_);
-    code_token_to_fds_and_tokens_.insert({code_token, {}});
+    code_token_to_request_metadatas_.insert({code_token, {}});
   }
   grpc::ClientContext context;
   LoadBinaryResponse response;
@@ -216,7 +230,7 @@ absl::StatusOr<std::string> Dispatcher::LoadBinaryForLogging(
           stub_->LoadBinary(&context, request, &response);
       !status.ok()) {
     absl::MutexLock lock(&mu_);
-    code_token_to_fds_and_tokens_.erase(code_token);
+    code_token_to_request_metadatas_.erase(code_token);
     return privacy_sandbox::server_common::ToAbslStatus(status);
   }
   {
@@ -225,6 +239,21 @@ absl::StatusOr<std::string> Dispatcher::LoadBinaryForLogging(
   }
   for (int i = 0; i < num_workers; ++i) {
     std::thread(&Dispatcher::AcceptorImpl, this, code_token).detach();
+  }
+  bool workers_have_been_created = false;
+  {
+    auto fn = [&] {
+      mu_.AssertReaderHeld();
+      const auto it = code_token_to_request_metadatas_.find(code_token);
+      return !it->second.empty();
+    };
+    absl::MutexLock l(&mu_);
+    workers_have_been_created =
+        mu_.AwaitWithTimeout(absl::Condition(&fn), kWorkerCreationTimeout);
+  }
+  if (!workers_have_been_created) {
+    Delete(code_token);
+    return absl::InternalError("Worker creation failure.");
   }
   return code_token;
 }
@@ -238,13 +267,13 @@ void Dispatcher::Delete(std::string_view code_token) {
     stub_->DeleteBinary(&context, request, &response);
   }
   absl::MutexLock lock(&mu_);
-  if (const auto it = code_token_to_fds_and_tokens_.find(code_token);
-      it != code_token_to_fds_and_tokens_.end()) {
+  if (const auto it = code_token_to_request_metadatas_.find(code_token);
+      it != code_token_to_request_metadatas_.end()) {
     while (!it->second.empty()) {
-      ::close(it->second.front().fd);
+      it->second.front()->ready.Notify();
       it->second.pop();
     }
-    code_token_to_fds_and_tokens_.erase(it);
+    code_token_to_request_metadatas_.erase(it);
   }
 }
 
@@ -261,7 +290,10 @@ void Dispatcher::Cancel(google::scp::roma::ExecutionToken execution_token) {
 // ensuring the number of acceptors scales back. Note that an acceptor will
 // accept connections without regard to UDF code_token.
 void Dispatcher::AcceptorImpl(std::string parent_code_token) {
-  while (true) {
+  // Break loop if the code_token generated by the `Load` call that detached
+  // this thread was deleted.
+  bool parent_code_token_deleted = false;
+  while (!parent_code_token_deleted) {
     const int fd = ::accept(listen_fd_, nullptr, nullptr);
     if (fd == -1) {
       break;
@@ -275,39 +307,40 @@ void Dispatcher::AcceptorImpl(std::string parent_code_token) {
       ::close(fd);
       continue;
     }
-    std::string execution_token = data->substr(kNumTokenBytes);
+    RequestMetadata request_metadata{
+        .fd = fd,
+        .token = data->substr(kNumTokenBytes),
+        .handler =
+            +[](int fd, std::filesystem::path /*log_file_name*/) {
+              // The default handler is called when this thread is unblocked by
+              // the destructor rather than an execution request.
+              ::close(fd);
+            },
+    };
+    std::filesystem::path log_file_name =
+        log_dir_ / absl::StrCat(request_metadata.token, ".log");
     data->resize(kNumTokenBytes);
     {
       absl::MutexLock lock(&mu_);
-      if (const auto it = code_token_to_fds_and_tokens_.find(*data);
-          it != code_token_to_fds_and_tokens_.end()) {
-        it->second.push(FdAndToken{
-            .fd = fd,
-            .token = std::move(execution_token),
-        });
-      } else {
-        LOG(ERROR) << "Unrecognized code token.";
-        ::close(fd);
+      if (!code_token_to_request_metadatas_.contains(parent_code_token)) {
+        // We do not immediately break here because we've already called
+        // `accept` and must process the new connection first. Checking this
+        // condition here allows us to only acquire the lock once per loop.
+        parent_code_token_deleted = true;
       }
-
-      // Break loop if the code_token generated by the `Load` call that detached
-      // this thread was deleted.
-      if (!code_token_to_fds_and_tokens_.contains(parent_code_token)) {
-        break;
+      if (const auto it = code_token_to_request_metadatas_.find(*data);
+          it != code_token_to_request_metadatas_.end()) {
+        it->second.push(&request_metadata);
+      } else {
+        LOG(INFO) << "Unrecognized code token.";
+        ::close(fd);
+        continue;
       }
     }
+    request_metadata.ready.WaitForNotification();
+    std::move(request_metadata.handler)(fd, std::move(log_file_name));
   }
   absl::MutexLock lock(&mu_);
   --acceptor_threads_in_flight_;
-}
-
-void Dispatcher::ExecutorImpl(const int fd,
-                              const google::protobuf::Message& request,
-                              absl::AnyInvocable<void(int) &&> handler) {
-  SerializeDelimitedToFileDescriptor(request, fd);
-  std::move(handler)(fd);
-  ::close(fd);
-  absl::MutexLock lock(&mu_);
-  --executor_threads_in_flight_;
 }
 }  // namespace privacy_sandbox::server_common::byob

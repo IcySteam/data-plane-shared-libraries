@@ -32,16 +32,16 @@
 #include <string_view>
 #include <utility>
 
-#include "src/roma/byob/config/config.h"
-#include "src/roma/byob/interface/roma_service.h"
-#include "src/util/execution_token.h"
-#include "src/util/status_macro/status_macros.h"
-#include "{{$file.Name | trimSuffix (ext $file.Name)}}_udf_interface.pb.h"
-
 #include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/synchronization/notification.h"
+#include "src/roma/byob/config/config.h"
+#include "src/roma/byob/interface/roma_service.h"
+#include "src/roma/config/function_binding_object_v2.h"
+#include "src/util/execution_token.h"
+#include "src/util/status_macro/status_macros.h"
+#include "{{$file.Name | trimSuffix (ext $file.Name)}}_udf_interface.pb.h"
 
 {{range $svc := .Services}}
 {{- $svcopts := index $svc.Options "privacysandbox.apis.roma.app_api.v1.roma_svc_annotation"}}
@@ -62,35 +62,24 @@ class {{$svcName}} final {
   using Mode = privacy_sandbox::server_common::byob::Mode;
 
   static absl::StatusOr<{{$svcName}}<TMetadata>> Create(Config config,
-                                                        Mode mode = Mode::kModeSandbox) {
+                                                        Mode mode = Mode::kModeGvisorSandbox) {
     auto roma_service = std::make_unique<AppService>();
     PS_RETURN_IF_ERROR(roma_service->Init(std::move(config), mode));
     return {{$svcName}}<TMetadata>(std::move(roma_service));
   }
 
   /**
-   * @brief Registers a new binary asynchronously from the provided `code_path`.
+   * @brief Registers a new binary synchronously from the provided `code_path`.
    *
-   * @paragraph Once the load operation has been completed, notification will be
-   * sent via absl::Notification namely `notification`. If load is successful,
-   * the load_status will be populated with an ok status else with the error
-   * status and message. If load is successful, registered service can be called
-   * on the code using the `code_token` returned by this function.
+   * @paragraph If load is successful, registered service can be called on the
+   * code using the `code_token` returned by this function.
    *
    * @param code_path path to the binary to be loaded into the sandbox.
-   * @param notification notifies once `load_status` is available.
-   * @param load_status is populated with the status of load once load is
-   * completed. If the status is ok, then `code_token` returned by this function
-   * can be used for calling this binary in subsequent execution requests.
    * @param num_workers number of workers in the worker pool.
    * @return absl::StatusOr<std::string> returns the `code_token`.
    */
   absl::StatusOr<std::string> Register(std::filesystem::path code_path,
-                                       absl::Notification& notification,
-                                       absl::Status& load_status,
                                        int num_workers) {
-    notification.Notify();
-    load_status = absl::OkStatus();
     return roma_service_->LoadBinary(std::move(code_path), num_workers);
   }
 
@@ -105,53 +94,32 @@ class {{$svcName}} final {
   /**
   * @brief Creates workers for binary with logging with logging enabled.
   *
-  * @paragraph Once the load operation is completed, notification will be
-  * sent via absl::Notification namely `notification`. If load is successful,
-  * the load_status will be populated with an ok status else with the error
-  * status and message. If load is successful, registered service can be called
-  * on the code using the `code_token` returned by this function.
+  * @paragraph If load is successful, registered service can be called on the
+  * code using the `code_token` returned by this function.
   *
   * @param code_path path to the binary to be loaded into the sandbox.
-  * @param notification notifies once `load_status` is available.
-  * @param load_status is populated with the status of load once load is
-  * completed. If the status is ok, then `code_token` returned by this function
-  * can be used for calling this binary in subsequent execution requests.
   * @param num_workers number of prewarmed workers to be created.
   * Currently, zero workers are not supported.
   * @return absl::StatusOr<std::string> returns the `code_token`.
   */
   absl::StatusOr<std::string> RegisterForLogging(
-      std::filesystem::path code_path, absl::Notification& notification,
-      absl::Status& load_status, int num_workers) {
-    notification.Notify();
-    load_status = absl::OkStatus();
+      std::filesystem::path code_path, int num_workers) {
     return roma_service_->LoadBinaryForLogging(std::move(code_path), num_workers);
   }
 
   /**
-   * @brief Registers a new binary asynchronously from the provided `code_path`.
+   * @brief Registers a new binary synchronously from the provided `code_path`.
    *
-   * @paragraph Once the load operation has been completed, notification will be
-   * sent via absl::Notification namely `notification`. If load is successful,
-   * the load_status will be populated with an ok status else with the error
-   * status and message. If load is successful, registered service can be called
-   * on the code using the `code_token` returned by this function.
+   * @paragraph If load is successful, registered service can be called on the
+   * code using the `code_token` returned by this function.
    *
    * @param no_log_code_token code token corresponding to the already loaded binary.
-   * @param notification notifies once `load_status` is available.
-   * @param load_status is populated with the status of load once load is
-   * completed. If the status is ok, then `code_token` returned by this function
-   * can be used for calling this binary in subsequent execution requests.
    * @param num_workers number of prewarmed workers to be created.
    * Currently, zero workers are not supported.
    * @return absl::StatusOr<std::string> returns the `code_token`.
    */
   absl::StatusOr<std::string> RegisterForLogging(
-      std::string no_log_code_token,
-      absl::Notification & notification, absl::Status & load_status,
-      int num_workers) {
-    notification.Notify();
-    load_status = absl::OkStatus();
+      std::string no_log_code_token, int num_workers) {
     return roma_service_->LoadBinaryForLogging(
         std::move(no_log_code_token),
         num_workers);
@@ -178,30 +146,30 @@ class {{$svcName}} final {
    * @return absl::Status
    */
   absl::StatusOr<google::scp::roma::ExecutionToken> {{$rpc.Name}}(
-      absl::Notification& notification, {{$reqType}} request,
+      absl::Notification& notification, const {{$reqType}}& request,
       absl::StatusOr<std::unique_ptr<{{$respType}}>>& response,
       TMetadata metadata = TMetadata(), std::string_view code_token = "") {
     return roma_service_->ProcessRequest(
-      code_token, std::move(request), std::move(metadata), notification, response);
+      code_token, request, std::move(metadata), notification, response);
   }
 
   absl::StatusOr<google::scp::roma::ExecutionToken> {{$rpc.Name}}(
       absl::AnyInvocable<void(absl::StatusOr<{{$respType}}>)> callback,
-      {{$reqType}} request,
+      const {{$reqType}}& request,
       TMetadata metadata = TMetadata(),
       std::string_view code_token = "") {
     return roma_service_->template ProcessRequest<{{$respType}}>(
-      code_token, std::move(request), std::move(metadata), std::move(callback));
+      code_token, request, std::move(metadata), std::move(callback));
   }
 
   absl::StatusOr<google::scp::roma::ExecutionToken> {{$rpc.Name}}(
       absl::AnyInvocable<void(absl::StatusOr<{{$respType}}>,
       absl::StatusOr<std::string_view> logs)> callback_with_logs_param,
-      {{$reqType}} request,
+      const {{$reqType}}& request,
       TMetadata metadata = TMetadata(),
       std::string_view code_token = "") {
     return roma_service_->template ProcessRequest<{{$respType}}>(
-      code_token, std::move(request), std::move(metadata), std::move(callback_with_logs_param));
+      code_token, request, std::move(metadata), std::move(callback_with_logs_param));
   }
 {{end}}
 

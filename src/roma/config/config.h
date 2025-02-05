@@ -140,6 +140,19 @@ class Config {
   bool logging_function_set = false;
 
   /**
+   * @brief Enable metadata storage.
+   *
+   */
+  bool enable_metadata_storage = true;
+
+  /**
+   * @brief Enable cancellation of callbacks for requests that are currently
+   * executing.
+   *
+   */
+  bool skip_callback_for_cancelled = true;
+
+  /**
    * @brief Function that can be set to overwrite the default memory check
    * threshold. If this function returns a value that is equal to or smaller
    * than the available system memory at the time of initialization, roma will

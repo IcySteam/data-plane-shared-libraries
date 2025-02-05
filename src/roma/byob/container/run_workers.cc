@@ -14,6 +14,7 @@
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <seccomp.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,10 +22,13 @@
 #include <sys/mount.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include <linux/seccomp.h>
 
 #include <filesystem>
 #include <limits>
@@ -55,21 +59,23 @@
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "google/protobuf/util/delimited_message_util.h"
-#include "src/core/common/uuid/uuid.h"
 #include "src/roma/byob/dispatcher/dispatcher.grpc.pb.h"
-#include "src/roma/byob/dispatcher/dispatcher.h"
 #include "src/roma/byob/dispatcher/dispatcher.pb.h"
+#include "src/roma/byob/dispatcher/interface.h"
+#include "src/roma/byob/utility/utils.h"
 #include "src/util/status_macro/status_macros.h"
 #include "src/util/status_macro/status_util.h"
 
-ABSL_FLAG(std::string, control_socket_name, "/sockdir/xyzw.sock",
+ABSL_FLAG(std::string, control_socket_name, "/sock_dir/xyzw.sock",
           "Socket for host to run_workers communication");
-ABSL_FLAG(std::string, udf_socket_name, "/sockdir/abcd.sock",
+ABSL_FLAG(std::string, udf_socket_name, "/sock_dir/abcd.sock",
           "Socket for host to UDF communication");
 ABSL_FLAG(std::vector<std::string>, mounts,
           std::vector<std::string>({"/lib", "/lib64"}),
           "Mounts containing dependencies needed by the binary");
 ABSL_FLAG(std::string, log_dir, "/log_dir", "Directory used for storing logs");
+ABSL_FLAG(bool, enable_seccomp_filter, false,
+          "Decides whether seccomp filtering should be applied.");
 
 namespace {
 using ::google::protobuf::io::FileInputStream;
@@ -85,12 +91,157 @@ using ::privacy_sandbox::server_common::byob::WorkerRunnerService;
 
 const absl::NoDestructor<std::filesystem::path> kBinaryExe("bin.exe");
 
+constexpr std::array<int, 121> kSyscallAllowlist = {
+    SCMP_SYS(arch_prctl),
+    SCMP_SYS(brk),
+    // Only needed by cap_udf test to verify no capabilities are available to
+    // the binary.
+    SCMP_SYS(capget),
+    SCMP_SYS(clone),
+    SCMP_SYS(clone3),
+    SCMP_SYS(close),
+    SCMP_SYS(connect),
+    SCMP_SYS(dup2),
+    SCMP_SYS(dup3),
+    SCMP_SYS(epoll_create),
+    SCMP_SYS(epoll_create1),
+    SCMP_SYS(epoll_ctl),
+    SCMP_SYS(epoll_ctl_old),
+    SCMP_SYS(epoll_pwait),
+    SCMP_SYS(epoll_wait),
+    SCMP_SYS(epoll_wait_old),
+    SCMP_SYS(execve),
+    SCMP_SYS(execveat),
+    SCMP_SYS(exit),
+    SCMP_SYS(exit_group),
+    SCMP_SYS(fstat),
+    SCMP_SYS(fstat64),
+    SCMP_SYS(fstatat64),
+    SCMP_SYS(fstatfs),
+    SCMP_SYS(fstatfs64),
+    SCMP_SYS(fsync),
+    SCMP_SYS(futex),
+    SCMP_SYS(futex_time64),
+    SCMP_SYS(futimesat),
+    SCMP_SYS(getdents),
+    SCMP_SYS(getdents64),
+    SCMP_SYS(getegid),
+    SCMP_SYS(getegid32),
+    SCMP_SYS(geteuid),
+    SCMP_SYS(geteuid32),
+    SCMP_SYS(getgid),
+    SCMP_SYS(getgid32),
+    SCMP_SYS(getgroups),
+    SCMP_SYS(getgroups32),
+    SCMP_SYS(getpgid),
+    SCMP_SYS(getpgrp),
+    SCMP_SYS(getpid),
+    SCMP_SYS(getpmsg),
+    SCMP_SYS(getppid),
+    SCMP_SYS(getpriority),
+    SCMP_SYS(getrandom),
+    SCMP_SYS(getresgid),
+    SCMP_SYS(getresgid32),
+    SCMP_SYS(getresuid),
+    SCMP_SYS(getresuid32),
+    SCMP_SYS(getrlimit),
+    SCMP_SYS(getrusage),
+    SCMP_SYS(getsid),
+    SCMP_SYS(getsockname),
+    SCMP_SYS(getsockopt),
+    SCMP_SYS(getuid),
+    SCMP_SYS(getuid32),
+    SCMP_SYS(getxattr),
+    SCMP_SYS(link),
+    SCMP_SYS(linkat),
+    SCMP_SYS(lock),
+    SCMP_SYS(lseek),
+    SCMP_SYS(lsetxattr),
+    SCMP_SYS(lstat),
+    SCMP_SYS(lstat64),
+    SCMP_SYS(madvise),
+    SCMP_SYS(mmap),
+    SCMP_SYS(mmap2),
+    SCMP_SYS(mount),
+    SCMP_SYS(mprotect),
+    SCMP_SYS(mremap),
+    SCMP_SYS(munmap),
+    SCMP_SYS(name_to_handle_at),
+    SCMP_SYS(newfstatat),
+    SCMP_SYS(open),
+    SCMP_SYS(openat),
+    // Needed by the pause_udf for testing.
+    SCMP_SYS(pause),
+    SCMP_SYS(poll),
+    SCMP_SYS(ppoll),
+    SCMP_SYS(ppoll_time64),
+    SCMP_SYS(prctl),
+    SCMP_SYS(pread64),
+    SCMP_SYS(preadv),
+    SCMP_SYS(preadv2),
+    SCMP_SYS(prlimit64),
+    SCMP_SYS(pwrite64),
+    SCMP_SYS(pwritev),
+    SCMP_SYS(pwritev2),
+    SCMP_SYS(read),
+    SCMP_SYS(readlink),
+    SCMP_SYS(readlinkat),
+    SCMP_SYS(readv),
+    SCMP_SYS(restart_syscall),
+    SCMP_SYS(rt_sigaction),
+    SCMP_SYS(rt_sigpending),
+    SCMP_SYS(rt_sigprocmask),
+    SCMP_SYS(rt_sigreturn),
+    SCMP_SYS(rt_sigsuspend),
+    SCMP_SYS(rt_sigtimedwait),
+    SCMP_SYS(rt_sigtimedwait_time64),
+    SCMP_SYS(sched_getaffinity),
+    SCMP_SYS(sched_yield),
+    SCMP_SYS(set_robust_list),
+    SCMP_SYS(set_tid_address),
+    SCMP_SYS(setsockopt),
+    SCMP_SYS(sigaltstack),
+    SCMP_SYS(socket),
+    SCMP_SYS(stat),
+    SCMP_SYS(stat64),
+    SCMP_SYS(wait4),
+    SCMP_SYS(waitpid),
+    SCMP_SYS(umount2),
+    SCMP_SYS(uname),
+    SCMP_SYS(unshare),
+    SCMP_SYS(unlink),
+    SCMP_SYS(unlinkat),
+    SCMP_SYS(write),
+    // Added for generate_bid_bin
+    SCMP_SYS(clock_gettime),
+    SCMP_SYS(gettid),
+    SCMP_SYS(nanosleep),
+    SCMP_SYS(rseq),
+};
+
 std::string GenerateUuid() {
   uuid_t uuid;
   uuid_generate(uuid);
   std::string uuid_cstr(kNumTokenBytes, '\0');
   uuid_unparse(uuid, uuid_cstr.data());
   return uuid_cstr;
+}
+
+// Creates and returns a scmp_filter_ctx which allowlists specific syscalls and
+// causes an EPERM for syscalls not on the allowlist.
+absl::StatusOr<scmp_filter_ctx> GetSeccompFilter() {
+  scmp_filter_ctx ctx;
+  if ((ctx = seccomp_init(SCMP_ACT_ERRNO(EPERM))) == NULL) {
+    return absl::ErrnoToStatus(errno, "Failed to seccomp_init");
+  }
+  for (const auto& syscall : kSyscallAllowlist) {
+    if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, syscall, /*arg_cnt=*/0) < 0) {
+      seccomp_release(ctx);
+      return absl::ErrnoToStatus(
+          errno, absl::StrCat("Failed to seccomp_rule_add ", syscall));
+    }
+  }
+  return ctx;
 }
 
 absl::Status ConnectToPath(const int fd, std::string_view socket_name) {
@@ -104,19 +255,15 @@ absl::Status ConnectToPath(const int fd, std::string_view socket_name) {
   return absl::OkStatus();
 }
 
-struct PivotRootData {
-  std::filesystem::path new_root_dir;
-  std::vector<std::pair<std::filesystem::path, std::filesystem::path>>
-      mounts_source_and_target;
-};
-
 // WorkerImplArg contains references to objects whose lifetimes are managed
 // elsewhere. This is considered problematic. However, it is safe in this case
 // because worker clones are created with CLONE_VFORK and CLONE_VM flag. These
 // flags ensure that the calling process does not modify/delete the content
 // before the worker calls exec.
 struct WorkerImplArg {
-  const PivotRootData& pivot_root_data;
+  const std::filesystem::path& pivot_root_dir;
+  absl::Span<const std::pair<std::filesystem::path, std::filesystem::path>>
+      sources_and_targets_read_and_write;
   std::string_view execution_token;
   std::string_view socket_name;
   std::string_view code_token;
@@ -124,6 +271,7 @@ struct WorkerImplArg {
   int dev_null_fd;
   bool enable_log_egress;
   std::string_view log_dir_name;
+  std::string_view socket_dir_name;
 };
 
 absl::Status SetPrctlOptions(
@@ -137,38 +285,12 @@ absl::Status SetPrctlOptions(
   return absl::OkStatus();
 }
 
-absl::StatusOr<std::filesystem::path> CreateNewPivotRootDir() {
+absl::StatusOr<std::filesystem::path> CreatePivotRootDir() {
   std::string pivot_root_dir = "/tmp/pivot_root_XXXXXX";
   if (::mkdtemp(pivot_root_dir.data()) == nullptr) {
     return absl::ErrnoToStatus(errno, "mkdtemp()");
   }
   return pivot_root_dir;
-}
-
-absl::Status CreateDirectories(const std::filesystem::path& path) {
-  if (std::error_code ec; !std::filesystem::create_directories(path, ec)) {
-    return absl::InternalError(
-        absl::StrCat("Failed to create '", path.native(), "': ", ec.message()));
-  }
-  return absl::OkStatus();
-}
-
-absl::Status RemoveDirectories(const std::filesystem::path& path) {
-  if (std::error_code ec; std::filesystem::remove_all(path, ec) ==
-                          static_cast<std::uintmax_t>(-1)) {
-    return absl::InternalError(absl::StrCat(
-        "Failed to remove_all '", path.native(), "': ", ec.message()));
-  }
-  return absl::OkStatus();
-}
-
-absl::Status Mount(const char* source, const char* target,
-                   const char* filesystemtype, int mountflags) {
-  if (::mount(source, target, filesystemtype, mountflags, nullptr) == -1) {
-    return absl::ErrnoToStatus(errno, absl::StrCat("Failed to mount '", source,
-                                                   "' to '", target, "'"));
-  }
-  return absl::OkStatus();
 }
 
 absl::Status Dup2(int oldfd, int newfd) {
@@ -191,57 +313,34 @@ absl::Status SetupSandbox(const WorkerImplArg& worker_impl_arg) {
           errno, absl::StrCat("Failed to open '", log_file_name.native(), "'"));
     }
   }
-  const PivotRootData& pivot_root_data = worker_impl_arg.pivot_root_data;
-  PS_RETURN_IF_ERROR(RemoveDirectories(pivot_root_data.new_root_dir));
-  // Set up restricted filesystem for worker using pivot_root
-  // pivot_root doesn't work under an MS_SHARED mount point.
-  // https://man7.org/linux/man-pages/man2/pivot_root.2.html.
-  PS_RETURN_IF_ERROR(Mount(nullptr, "/", nullptr, MS_REC | MS_PRIVATE));
-  for (const auto& [source, target] :
-       pivot_root_data.mounts_source_and_target) {
-    PS_RETURN_IF_ERROR(CreateDirectories(target));
-    PS_RETURN_IF_ERROR(Mount(source.c_str(), target.c_str(), nullptr, MS_BIND));
-  }
-
-  // MS_REC needed here to get other mounts (/lib, /lib64 etc)
-  PS_RETURN_IF_ERROR(Mount(pivot_root_data.new_root_dir.c_str(),
-                           pivot_root_data.new_root_dir.c_str(), "bind",
-                           MS_REC | MS_BIND));
-  PS_RETURN_IF_ERROR(Mount(pivot_root_data.new_root_dir.c_str(),
-                           pivot_root_data.new_root_dir.c_str(), "bind",
-                           MS_REC | MS_SLAVE));
-  {
-    const std::filesystem::path pivot_dir =
-        pivot_root_data.new_root_dir / "pivot";
-    PS_RETURN_IF_ERROR(CreateDirectories(pivot_dir));
-    if (::syscall(SYS_pivot_root, pivot_root_data.new_root_dir.c_str(),
-                  pivot_dir.c_str()) == -1) {
-      return absl::ErrnoToStatus(
-          errno, absl::StrCat("syscall(SYS_pivot_root, '",
-                              pivot_root_data.new_root_dir.c_str(), "', '",
-                              pivot_dir.c_str(), "')"));
-    }
-  }
-  if (::chdir("/") == -1) {
-    return absl::ErrnoToStatus(errno, "chdir('/')");
-  }
-  if (::umount2("/pivot", MNT_DETACH) == -1) {
-    return absl::ErrnoToStatus(errno, "mount2('/pivot', MNT_DETACH)");
-  }
-  if (::rmdir("/pivot") == -1) {
-    return absl::ErrnoToStatus(errno, "rmdir('/pivot')");
-  }
-  for (const auto& [source, _] : pivot_root_data.mounts_source_and_target) {
-    PS_RETURN_IF_ERROR(
-        Mount(source.c_str(), source.c_str(), nullptr, MS_REMOUNT | MS_BIND));
-  }
   PS_RETURN_IF_ERROR(SetPrctlOptions({
       {PR_CAPBSET_DROP, CAP_SYS_ADMIN},
       {PR_CAPBSET_DROP, CAP_SETPCAP},
       {PR_SET_PDEATHSIG, SIGHUP},
   }));
   if (worker_impl_arg.enable_log_egress) {
+    PS_RETURN_IF_ERROR(Dup2(log_fd, STDOUT_FILENO));
     PS_RETURN_IF_ERROR(Dup2(log_fd, STDERR_FILENO));
+  }
+  // socket_dir is mounted read-only but must not be exposed to the udf.
+  if (::umount2(worker_impl_arg.socket_dir_name.data(), MNT_DETACH) == -1) {
+    return absl::ErrnoToStatus(
+        errno,
+        absl::StrCat("Failed to umount ", worker_impl_arg.socket_dir_name));
+  }
+  // Read/Write mounted directories must not be expsed to the udf.
+  for (const auto& [_, target] :
+       worker_impl_arg.sources_and_targets_read_and_write) {
+    if (::umount2(target.c_str(), MNT_DETACH) == -1) {
+      return absl::ErrnoToStatus(
+          errno, absl::StrCat("umount2(", target.native(), ")"));
+    }
+  }
+  // Root directory and any umounted targets must be read-only.
+  PS_RETURN_IF_ERROR(::privacy_sandbox::server_common::byob::Mount(
+      "/", "/", nullptr, MS_REMOUNT | MS_BIND | MS_RDONLY));
+  if (::unshare(CLONE_NEWUSER) == -1) {
+    return absl::ErrnoToStatus(errno, "unshare(CLONE_NEWUSER)");
   }
   return absl::OkStatus();
 }
@@ -292,29 +391,26 @@ struct ReloaderImplArg {
   std::string socket_name;
   std::string code_token;
   std::filesystem::path binary_path;
+  std::filesystem::path pivot_root_dir;
   int dev_null_fd;
   bool enable_log_egress;
+  bool enable_seccomp_filter;
   std::string log_dir_name;
 };
 
-PivotRootData GetPivotRootData(const std::filesystem::path& pivot_root_dir,
-                               absl::Span<const std::string> mounts_str,
-                               const std::filesystem::path& binary_path) {
+std::vector<std::pair<std::filesystem::path, std::filesystem::path>>
+GetSourcesAndTargets(absl::Span<const std::string> mounts) {
   std::vector<std::pair<std::filesystem::path, std::filesystem::path>>
-      mounts_source_and_target;
-  mounts_source_and_target.reserve(mounts_str.size() + 1);
-  for (const std::string& mount_str : mounts_str) {
-    mounts_source_and_target.push_back(
-        {mount_str,
-         pivot_root_dir / std::filesystem::path(mount_str).relative_path()});
+      sources_and_targets;
+  sources_and_targets.reserve(mounts.size());
+  for (const std::filesystem::path mount : mounts) {
+    // Mount /x -> /x and /y/z -> /z.
+    sources_and_targets.push_back(
+        {mount,
+         "/" /
+             (mount.has_filename() ? mount : mount.parent_path()).filename()});
   }
-  const std::filesystem::path binary_dir = binary_path.parent_path();
-  mounts_source_and_target.push_back(
-      {binary_dir, pivot_root_dir / binary_dir.relative_path()});
-  return PivotRootData{
-      .new_root_dir = pivot_root_dir,
-      .mounts_source_and_target = mounts_source_and_target,
-  };
+  return sources_and_targets;
 }
 
 int ReloaderImpl(void* arg) {
@@ -324,16 +420,50 @@ int ReloaderImpl(void* arg) {
       *static_cast<ReloaderImplArg*>(arg);
   CHECK_OK(Dup2(reloader_impl_arg.dev_null_fd, STDOUT_FILENO));
   CHECK_OK(Dup2(reloader_impl_arg.dev_null_fd, STDERR_FILENO));
-  const absl::StatusOr<std::filesystem::path> pivot_root_dir =
-      CreateNewPivotRootDir();
-  CHECK_OK(pivot_root_dir);
-  PivotRootData pivot_root_data = GetPivotRootData(
-      *pivot_root_dir, reloader_impl_arg.mounts, reloader_impl_arg.binary_path);
+  const std::filesystem::path socket_dir =
+      std::filesystem::path(reloader_impl_arg.socket_name).parent_path();
+  std::vector<std::pair<std::filesystem::path, std::filesystem::path>>
+      sources_and_targets_read_and_write;
+  if (reloader_impl_arg.enable_log_egress) {
+    sources_and_targets_read_and_write.emplace_back(
+        reloader_impl_arg.log_dir_name, reloader_impl_arg.log_dir_name);
+  }
+  {
+    std::vector<std::pair<std::filesystem::path, std::filesystem::path>>
+        sources_and_targets_read_only =
+            GetSourcesAndTargets(reloader_impl_arg.mounts);
+    sources_and_targets_read_only.push_back({socket_dir, socket_dir});
+
+    // SetupPivotRoot reduces the base filesystem image size. This pivot root
+    // includes the socket_dir, which must not be shared with the pivot_root
+    // created by the worker.
+    CHECK_OK(::privacy_sandbox::server_common::byob::SetupPivotRoot(
+        reloader_impl_arg.pivot_root_dir, sources_and_targets_read_only,
+        /*cleanup_pivot_root_dir=*/true,
+        /*sources_and_targets_read_and_write=*/
+        {{reloader_impl_arg.log_dir_name, reloader_impl_arg.log_dir_name}},
+        // Cannot remount root as read-only since creation of per-worker
+        // pivot_root needs write permissions.
+        /*remount_root_as_read_only=*/false));
+  }
+  CHECK_OK(SetPrctlOptions({{PR_CAPBSET_DROP, CAP_SYS_BOOT},
+                            {PR_CAPBSET_DROP, CAP_SYS_MODULE},
+                            {PR_CAPBSET_DROP, CAP_SYS_RAWIO},
+                            {PR_CAPBSET_DROP, CAP_MKNOD},
+                            {PR_CAPBSET_DROP, CAP_NET_ADMIN}}));
+  absl::StatusOr<scmp_filter_ctx> scmp_filter;
+  if (reloader_impl_arg.enable_seccomp_filter) {
+    scmp_filter = GetSeccompFilter();
+    CHECK_OK(scmp_filter);
+    PCHECK(seccomp_load(*scmp_filter) == 0);
+  }
   while (true) {
     // Start a new worker.
     const std::string execution_token = GenerateUuid();
     WorkerImplArg worker_impl_arg{
-        .pivot_root_data = pivot_root_data,
+        .pivot_root_dir = reloader_impl_arg.pivot_root_dir,
+        .sources_and_targets_read_and_write =
+            sources_and_targets_read_and_write,
         .execution_token = execution_token,
         .socket_name = reloader_impl_arg.socket_name,
         .code_token = reloader_impl_arg.code_token,
@@ -341,6 +471,7 @@ int ReloaderImpl(void* arg) {
         .dev_null_fd = reloader_impl_arg.dev_null_fd,
         .enable_log_egress = reloader_impl_arg.enable_log_egress,
         .log_dir_name = reloader_impl_arg.log_dir_name,
+        .socket_dir_name = socket_dir.native(),
     };
 
     // Explicitly 16-byte align the stack. Otherwise, `clone` on aarch64 may
@@ -352,7 +483,7 @@ int ReloaderImpl(void* arg) {
     const int pid =
         ::clone(WorkerImpl, stack + sizeof(stack),
                 CLONE_VM | CLONE_VFORK | CLONE_NEWIPC | CLONE_NEWPID | SIGCHLD |
-                    CLONE_NEWUTS | CLONE_NEWNS | CLONE_NEWUSER,
+                    CLONE_NEWUTS | CLONE_NEWNS,
                 &worker_impl_arg);
     if (pid == -1) {
       PLOG(ERROR) << "clone()";
@@ -374,6 +505,9 @@ int ReloaderImpl(void* arg) {
     } else if (const int exit_code = WEXITSTATUS(status); exit_code != 0) {
       LOG(INFO) << "Process pid=" << pid << " exit_code=" << exit_code;
     }
+  }
+  if (reloader_impl_arg.enable_seccomp_filter) {
+    seccomp_release(*scmp_filter);
   }
   return 0;
 }
@@ -417,19 +551,19 @@ class WorkerRunner final : public WorkerRunnerService::Service {
  public:
   WorkerRunner(std::string socket_name, std::vector<std::string> mounts,
                std::string log_dir_name, const int dev_null_fd,
-               const std::filesystem::path& progdir)
+               const std::filesystem::path& prog_dir)
       : socket_name_(std::move(socket_name)),
         mounts_(std::move(mounts)),
         log_dir_name_(std::move(log_dir_name)),
         dev_null_fd_(dev_null_fd),
-        progdir_(progdir) {}
+        prog_dir_(prog_dir) {}
 
   ~WorkerRunner() {
     LOG(INFO) << "Shutting down.";
 
     // Kill extant workers before exit.
-    for (const auto& [_, pids] : code_token_to_reloader_pids_) {
-      for (const int pid : pids) {
+    for (const auto& [_, pids] : code_token_to_reloader_metadata_) {
+      for (const auto& [pid, pivot_root_dir] : pids) {
         if (::killpg(pid, SIGKILL) == -1) {
           // If the group has already terminated, degrade error to a log.
           if (errno == ESRCH) {
@@ -439,6 +573,13 @@ class WorkerRunner final : public WorkerRunnerService::Service {
           }
         }
         while (::waitpid(-pid, /*wstatus=*/nullptr, /*options=*/0) > 0) {
+        }
+        if (absl::Status status =
+                ::privacy_sandbox::server_common::byob::RemoveDirectories(
+                    pivot_root_dir);
+            !status.ok()) {
+          LOG(ERROR) << "Failed to delete pivot_root directory "
+                     << pivot_root_dir << ": " << status;
         }
       }
     }
@@ -473,11 +614,19 @@ class WorkerRunner final : public WorkerRunnerService::Service {
   };
 
   absl::Status Load(const LoadBinaryRequest& request) ABSL_LOCKS_EXCLUDED(mu_) {
-    const std::filesystem::path binary_dir = progdir_ / request.code_token();
+    const std::filesystem::path binary_dir = prog_dir_ / request.code_token();
     if (std::error_code ec;
         !std::filesystem::create_directory(binary_dir, ec)) {
       return absl::InternalError(absl::StrCat(
           "Failed to create ", binary_dir.native(), ": ", ec.message()));
+    }
+    std::error_code ec;
+    if (std::filesystem::permissions(binary_dir,
+                                     std::filesystem::perms::owner_all, ec);
+        ec) {
+      return absl::InternalError(
+          absl::StrCat("Failed to modify permissions for ", binary_dir.native(),
+                       ": ", ec.message()));
     }
     std::filesystem::path binary_path = binary_dir / *kBinaryExe;
     if (request.has_binary_content()) {
@@ -489,23 +638,32 @@ class WorkerRunner final : public WorkerRunnerService::Service {
       return absl::InternalError("Failed to load binary");
     }
     return CreateWorkerPool(std::move(binary_path), request.code_token(),
-                            request.num_workers(), request.enable_log_egress());
+                            request.num_workers(), request.enable_log_egress(),
+                            absl::GetFlag(FLAGS_enable_seccomp_filter));
   }
 
   void Delete(std::string_view request_code_token) ABSL_LOCKS_EXCLUDED(mu_) {
     absl::MutexLock lock(&mu_);
-    if (const auto it = code_token_to_reloader_pids_.find(request_code_token);
-        it != code_token_to_reloader_pids_.end()) {
+    if (const auto it =
+            code_token_to_reloader_metadata_.find(request_code_token);
+        it != code_token_to_reloader_metadata_.end()) {
       // Kill all workers and delete binary.
-      for (const int pid : it->second) {
+      for (const auto& [pid, pivot_root_dir] : it->second) {
         if (::killpg(pid, SIGKILL) == -1) {
           PLOG(INFO) << "killpg(" << pid << ", SIGKILL)";
         }
         while (::waitpid(-pid, /*wstatus=*/nullptr, /*options=*/0) > 0) {
         }
+        if (absl::Status status =
+                ::privacy_sandbox::server_common::byob::RemoveDirectories(
+                    pivot_root_dir);
+            !status.ok()) {
+          LOG(ERROR) << "Failed to delete pivot_root directory "
+                     << pivot_root_dir << ": " << status;
+        }
       }
-      code_token_to_reloader_pids_.erase(it);
-      const std::filesystem::path binary_dir = progdir_ / request_code_token;
+      code_token_to_reloader_metadata_.erase(it);
+      const std::filesystem::path binary_dir = prog_dir_ / request_code_token;
       if (std::error_code ec; std::filesystem::remove_all(binary_dir, ec) ==
                               static_cast<std::uintmax_t>(-1)) {
         LOG(ERROR) << "Failed to remove " << binary_dir << ": " << ec;
@@ -540,7 +698,7 @@ class WorkerRunner final : public WorkerRunnerService::Service {
       const std::filesystem::path& binary_path,
       std::string_view source_bin_code_token) {
     const std::filesystem::path existing_binary_path =
-        progdir_ / source_bin_code_token / *kBinaryExe;
+        prog_dir_ / source_bin_code_token / *kBinaryExe;
     if (!std::filesystem::exists(existing_binary_path)) {
       return absl::FailedPreconditionError(absl::StrCat(
           "Expected binary ", existing_binary_path.native(), " not found"));
@@ -552,35 +710,45 @@ class WorkerRunner final : public WorkerRunnerService::Service {
     return absl::OkStatus();
   }
 
-  absl::Status CreateWorkerPool(std::filesystem::path binary_path,
+  absl::Status CreateWorkerPool(const std::filesystem::path binary_path,
                                 std::string_view code_token,
                                 const int num_workers,
-                                const bool enable_log_egress)
+                                const bool enable_log_egress,
+                                const bool enable_seccomp_filter)
       ABSL_LOCKS_EXCLUDED(mu_) {
     {
       absl::MutexLock lock(&mu_);
-      code_token_to_reloader_pids_[code_token].reserve(num_workers);
+      code_token_to_reloader_metadata_[code_token].reserve(num_workers);
     }
+    std::vector<std::string> mounts = mounts_;
+    const std::filesystem::path binary_dir = binary_path.parent_path();
+    mounts.push_back(binary_dir);
     ReloaderImplArg reloader_impl_arg{
-        .mounts = mounts_,
+        .mounts = std::move(mounts),
         .socket_name = socket_name_,
         .code_token = std::string(code_token),
-        .binary_path = std::move(binary_path),
+        // Within the pivot root, binary_dir is a child of root, not prog_dir.
+        .binary_path = binary_dir.filename() / binary_path.filename(),
         .dev_null_fd = dev_null_fd_,
         .enable_log_egress = enable_log_egress,
+        .enable_seccomp_filter = enable_seccomp_filter,
         .log_dir_name = log_dir_name_,
     };
     for (int i = 0; i < num_workers; ++i) {
+      PS_ASSIGN_OR_RETURN(std::filesystem::path pivot_root_dir,
+                          CreatePivotRootDir());
+      reloader_impl_arg.pivot_root_dir = pivot_root_dir;
       // TODO: b/375622989 - Refactor run_workers to make the code more
       // coherent.
       alignas(16) char stack[1 << 20];
-      const pid_t pid = ::clone(ReloaderImpl, stack + sizeof(stack), SIGCHLD,
-                                &reloader_impl_arg);
+      const pid_t pid = ::clone(ReloaderImpl, stack + sizeof(stack),
+                                CLONE_NEWNS | SIGCHLD, &reloader_impl_arg);
       if (pid == -1) {
         return absl::ErrnoToStatus(errno, "clone()");
       }
       absl::MutexLock lock(&mu_);
-      code_token_to_reloader_pids_[code_token].push_back(pid);
+      code_token_to_reloader_metadata_[code_token].push_back(
+          {pid, std::move(pivot_root_dir)});
     }
     return absl::OkStatus();
   }
@@ -589,10 +757,13 @@ class WorkerRunner final : public WorkerRunnerService::Service {
   const std::vector<std::string> mounts_;
   const std::string log_dir_name_;
   const int dev_null_fd_;
-  const std::filesystem::path& progdir_;
+  const std::filesystem::path& prog_dir_;
   absl::Mutex mu_;
-  absl::flat_hash_map<std::string, std::vector<int>>
-      code_token_to_reloader_pids_ ABSL_GUARDED_BY(mu_);
+  // Maps the code token to the corresponding reloaders' pids and
+  // pivot_root_dirs.
+  absl::flat_hash_map<std::string,
+                      std::vector<std::pair<int, std::filesystem::path>>>
+      code_token_to_reloader_metadata_ ABSL_GUARDED_BY(mu_);
 };
 
 ABSL_CONST_INIT absl::Mutex signal_mu{absl::kConstInit};
@@ -608,8 +779,17 @@ int main(int argc, char** argv) {
     LOG(ERROR) << "Failed to create " << prog_dir << ": " << ec;
     return -1;
   }
-  absl::Cleanup progdir_cleanup = [&prog_dir] {
-    if (absl::Status status = RemoveDirectories(prog_dir); !status.ok()) {
+  std::error_code ec;
+  if (std::filesystem::permissions(prog_dir, std::filesystem::perms::owner_all,
+                                   ec);
+      ec) {
+    LOG(ERROR) << "Failed to modify permission for " << prog_dir << ": " << ec;
+    return -1;
+  }
+  absl::Cleanup prog_dir_cleanup = [&prog_dir] {
+    if (absl::Status status =
+            ::privacy_sandbox::server_common::byob::RemoveDirectories(prog_dir);
+        !status.ok()) {
       LOG(ERROR) << status;
     }
   };

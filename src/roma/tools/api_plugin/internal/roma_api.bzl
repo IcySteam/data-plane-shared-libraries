@@ -140,6 +140,16 @@ _cc_app_template_plugins = [
             sub_directory = "byob/app",
         ),
         struct(
+            template_file = "cpp_roma_byob_traffic_generator.tmpl",
+            suffix = "_traffic_generator.cc",
+            sub_directory = "byob/app",
+        ),
+        struct(
+            template_file = "md_roma_byob_traffic_generator.tmpl",
+            suffix = "_traffic_generator.md",
+            sub_directory = "byob/app",
+        ),
+        struct(
             template_file = "md_cpp_client_sdk.tmpl",
             suffix = "_cc_byob_app_api_client_sdk.md",
             sub_directory = "byob/app",
@@ -382,6 +392,8 @@ def roma_image(
         debug = False,
         user = get_user("root"),
         container_structure_test_configs = [],
+        container_structure_test_size = "medium",
+        container_structure_test_shard_count = 1,
         **kwargs):
     debug_str = "debug" if debug else "nondebug"
     oci_image(
@@ -405,9 +417,10 @@ def roma_image(
     if container_structure_test_configs:
         container_structure_test(
             name = "{}_test".format(name),
-            size = "medium",
             configs = container_structure_test_configs,
             image = ":{}".format(name),
+            shard_count = container_structure_test_shard_count,
+            size = container_structure_test_size,
             tags = kwargs.get("tags", ["noasan", "nomsan", "notsan", "noubsan"]),
         )
 
@@ -418,6 +431,8 @@ def roma_byob_image(
         debug = False,
         user = get_user("root"),
         container_structure_test_configs = [],
+        container_structure_test_size = "medium",
+        container_structure_test_shard_count = 1,
         **kwargs):
     """Generates a BYOB OCI container image
 
@@ -445,5 +460,7 @@ def roma_byob_image(
         container_structure_test_configs = container_structure_test_configs + [
             Label("//src/roma/byob:image_{}_test.yaml".format(user.flavor)),
         ],
+        container_structure_test_size = container_structure_test_size,
+        container_structure_test_shard_count = container_structure_test_shard_count,
         **{k: v for (k, v) in kwargs.items() if k not in ["tars"]}
     )

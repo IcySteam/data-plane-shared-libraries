@@ -2,6 +2,47 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## 0.20.0 (2025-01-29)
+
+
+### Dependencies
+
+* **deps:** Upgrade absl to e83ef27 2024-11-06
+* **deps:** Upgrade bazel_skylib to 1.7.1
+* **deps:** Upgrade build-system to 0.71.0
+* **deps:** Upgrade container_structure_test to 1.19.3
+* **deps:** Upgrade go toolchain to 1.23.4
+
+## 0.19.1 (2024-09-27)
+
+
+### Features
+
+* Add client-type to rpc_diff_test
+
+## 0.19.0 (2024-09-23)
+
+
+### Features
+
+* Add build-amazonlinux2023 to pull and push scripts
+* Add filtered reply to test outputs
+* Use Docker volumes instead of bind mounts in diff tests
+
+
+### Bug Fixes
+
+* Copy wrk2 request files to the container
+* Load request files in the init function
+* Remove WORKSPACE env var from wrk2_test_runner
+
+## 0.18.0 (2024-07-02)
+
+
+### Features
+
+* Create tmp subdir in sut work dir
+
 ## 0.17.0 (2024-06-27)
 
 

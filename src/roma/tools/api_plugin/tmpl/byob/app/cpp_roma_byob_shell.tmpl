@@ -55,8 +55,9 @@ ABSL_FLAG(std::optional<std::string>, commands_file, std::nullopt,
 ABSL_FLAG(std::optional<std::string>, udf_log_file, std::nullopt,
           "Directory for storing UDF logs.");
 ABSL_FLAG(privacy_sandbox::server_common::byob::Mode, sandbox,
-  privacy_sandbox::server_common::byob::Mode::kModeSandbox,
-  "Run BYOB in sandbox mode.");
+          privacy_sandbox::server_common::byob::Mode::kModeMinimalSandbox,
+          "Run BYOB with mode: gvisor, gvisor-debug, minimal.");
+ABSL_FLAG(bool, syscall_filter, false, "Whether to enable syscall filtering.");
 
 
 {{$svc := index $file.Services 0}}
@@ -79,22 +80,14 @@ int main(int argc, char** argv) {
 
   // Initialize BYOB.
   absl::StatusOr<{{$svcName}}<>> service = {{$svcName}}<>::Create(
-      /*config=*/{},
+      /*config=*/{.enable_seccomp_filter = absl::GetFlag(FLAGS_syscall_filter)},
       absl::GetFlag(FLAGS_sandbox));
   CHECK_OK(service);
 
   // Create load and execute RPC handlers.
   auto load_fn =
       [&service, num_workers](std::string_view udf) -> absl::StatusOr<std::string> {
-    absl::Notification done;
-    absl::Status status;
-    absl::StatusOr<std::string> code_token =
-        service->RegisterForLogging(udf, done, status, num_workers);
-    if (!status.ok()) {
-      return status;
-    }
-    done.WaitForNotification();
-    return code_token;
+    return service->RegisterForLogging(udf, num_workers);
   };
   auto execute_fn = [&service, &udf_log_stream](
                         std::string_view rpc, std::string_view code_token,

@@ -12,28 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 load("@rules_cc//cc:defs.bzl", "cc_library")
-load("//src/roma/byob/config:container.bzl", "roma_container_dir", "roma_container_root_dir")
+load("//src/roma/byob/config:container.bzl", "roma_container_dir", "roma_container_root_dir", "run_workers_dir")
 
 cc_library(
     name = "roma_service",
     srcs = ["roma_service.cc"],
     hdrs = ["roma_service.h"],
+    defines = [
+        'RUN_WORKERS_PATH=\\"{}\\"'.format(run_workers_dir),
+    ],
     local_defines = [
         'CONTAINER_PATH=\\"{}\\"'.format(roma_container_dir),
         'CONTAINER_ROOT_RELPATH=\\"{}\\"'.format(roma_container_root_dir),
-    ] + select({
-        "@platforms//cpu:arm64": [
-            'LIB_MOUNTS=\\"/lib,/usr\\"',
-        ],
-        "@platforms//cpu:x86_64": [
-            'LIB_MOUNTS=\\"/lib,/lib64,/usr\\"',
-        ],
-    }),
+    ],
     visibility = ["//visibility:public"],
     deps = [
         "//src/core/common/uuid",
         "//src/roma/byob/config",
         "//src/roma/byob/dispatcher",
+        "//src/roma/byob/utility:utils",
+        "//src/roma/config:function_binding_object_v2",
         "//src/util:execution_token",
         "//src/util/status_macro:status_macros",
         "@com_google_absl//absl/log",

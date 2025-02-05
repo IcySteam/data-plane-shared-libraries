@@ -47,6 +47,7 @@ build:cpp_nowarn --per_file_copt=src/roma/logging/logging_.*test\.cc@-Wno-deprec
 build:cpp_nowarn --per_file_copt=src/roma/tools/v8_cli.*@-Wno-deprecated-declarations
 build:cpp_nowarn --per_file_copt=src/experimental/kevinbnaughton/roma_grpc/.*@-Wno-deprecated-declarations
 build:cpp_nowarn --per_file_copt=src/roma/byob/.*@-Wno-deprecated-declarations
+build:cpp_nowarn --per_file_copt=testing/roma/.*@-Wno-deprecated-declarations
 
 # Disabled due to necessary macro collision introduced in src/roma/sandbox/js_engine/v8_engine/v8.console.h
 build:cpp_nowarn --per_file_copt=src/roma/sandbox/worker/v8_engine_worker_test\.cc@-Wno-macro-redefined
@@ -82,6 +83,7 @@ build:asan_common --copt=-fno-omit-frame-pointer
 build:asan_common --linkopt=-fsanitize=address
 build:asan_common --linkopt=-fuse-ld=lld
 build:asan_common --test_tag_filters=-noasan
+build:asan_common --fission=yes
 # TODO(b/293876281): Re-enable ODR violation checking once it's fixed in the
 # ZLib library that we depend on.
 build:asan_common --action_env=ASAN_OPTIONS=detect_leaks=1:color=always:detect_odr_violation=0

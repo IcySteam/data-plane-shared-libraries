@@ -1,4 +1,4 @@
-# Copyright 2022 Google LLC
+# Copyright 2024 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,18 +12,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# refer to docs at https://github.com/GoogleContainerTools/container-structure-test
+# Refer to docs at https://github.com/GoogleContainerTools/container-structure-test.
 
 schemaVersion: 2.0.0
 
-# command tests require the docker toolchain
-commandTests:
-  - name: nitro-cli version
-    command: "nitro-cli"
-    args: ["--version"]
-    exitCode: 0
+containerRunOptions:
+  privileged: true
 
-  - name: nitro-cli build-enclave help
-    command: "nitro-cli"
-    args: ["build-enclave", "--help"]
+metadataTest:
+  entrypoint:
+    - /server/bin/traffic_generator
+
+fileExistenceTests:
+  - name: entrypoint
+    path: /server/bin/traffic_generator
+    permissions: -r-x------
+    isExecutableBy: owner
+    uid: {UID}
+    gid: {GID}
+
+commandTests:
+  - name: events stats 10k
+    command: /server/bin/traffic_generator
+    args:
+      - --num_workers=2
+      - --num_queries=1
+      - --burst_size=2
+      - --queries_per_second=1
+      - --sandbox=gvisor
     exitCode: 0

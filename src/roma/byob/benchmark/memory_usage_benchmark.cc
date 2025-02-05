@@ -27,6 +27,7 @@
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
 #include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -89,7 +90,11 @@ int MemoryUsageInBytes() {
     ::close(fd[0]);
     PCHECK(::dup2(fd[1], STDOUT_FILENO) != -1);
     const char* argv[] = {
-        "/usr/bin/runsc", "events", "-stats", "roma_server", nullptr,
+        "/usr/byob/gvisor/bin/runsc",
+        "events",
+        "-stats",
+        "roma_server",
+        nullptr,
     };
     ::execve(argv[0], const_cast<char* const*>(&argv[0]), nullptr);
     PLOG(FATAL) << "execve()";
@@ -119,7 +124,7 @@ int main(int argc, char** argv) {
           {
               .roma_container_name = "roma_server",
           },
-          Mode::kModeSandbox);
+          Mode::kModeGvisorSandbox);
   CHECK_OK(sample_interface);
 
   // Load UDF.
@@ -130,26 +135,22 @@ int main(int argc, char** argv) {
     const int load_iterations = absl::GetFlag(FLAGS_load_iterations);
     CHECK_GT(load_iterations, 0);
     for (int i = 0; i < load_iterations; ++i) {
-      absl::Notification done;
-      absl::Status status;
       switch (sort_list_udf) {
         case SortListUdf::k10K:
-          code_token = sample_interface->Register("/udf/sort_list_10k_udf",
-                                                  done, status, num_workers);
+          code_token =
+              sample_interface->Register("/udf/sort_list_10k_udf", num_workers);
           break;
         case SortListUdf::k100K:
           code_token = sample_interface->Register("/udf/sort_list_100k_udf",
-                                                  done, status, num_workers);
+                                                  num_workers);
           break;
         case SortListUdf::k1M:
-          code_token = sample_interface->Register("/udf/sort_list_1m_udf", done,
-                                                  status, num_workers);
+          code_token =
+              sample_interface->Register("/udf/sort_list_1m_udf", num_workers);
           break;
         default:
           LOG(FATAL) << "Unexpected sort_list_udf input";
       }
-      CHECK_OK(status);
-      done.WaitForNotification();
       CHECK_OK(code_token);
     }
     return *std::move(code_token);
@@ -165,8 +166,12 @@ int main(int argc, char** argv) {
   while (iteration_number++ < execute_iterations) {
     absl::Notification done;
     absl::StatusOr<std::unique_ptr<SortListResponse>> response;
-    CHECK_OK(sample_interface->SortList(done, request, response,
-                                        /*metadata=*/{}, code_token));
+    if (auto execution_token =
+            sample_interface->SortList(done, request, response,
+                                       /*metadata=*/{}, code_token);
+        !execution_token.ok()) {
+      LOG(ERROR) << "Execution failure: " << execution_token.status();
+    }
     done.WaitForNotification();
     ofs << iteration_number << "," << MemoryUsageInBytes() << "\n";
     CHECK_OK(response);

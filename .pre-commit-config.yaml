@@ -18,12 +18,12 @@ exclude: (?x)^(
   bazel-(bin|out|testlogs|workspace)/.*|
   .bazel_output/.*|
   builders/.*|
-  (third_party|src)/.*\.patch|
+  .*\.patch|
   version.txt|
   docs/cpio/protobuf/.*\.md
   )$
 
-fail_fast: true
+fail_fast: false
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
   rev: v4.6.0
@@ -33,12 +33,18 @@ repos:
   - id: mixed-line-ending
   - id: trailing-whitespace
     exclude: (?x)^(
-      build_defs/.*\.patch
+      build_defs/.*\.patch|
+      testing/.*\.reply\.json
       )$
   - id: check-case-conflict
   - id: check-merge-conflict
   - id: check-yaml
+    args:
+    - --allow-multiple-documents
   - id: check-json
+    exclude: (?x)^(
+      testing/.*\.reply
+      )\.json$
   - id: check-symlinks
   - id: check-added-large-files
     exclude: ^src/\.*/sort_list_\.*.cc$
@@ -118,8 +124,9 @@ repos:
     - javascript
     - json
     exclude: (?x)^(
-      .*-lock\.json
-      )$
+      .*-lock|
+      testing/.*\.reply
+      )\.json$
 
 - repo: https://github.com/DavidAnson/markdownlint-cli2
   rev: v0.7.1
@@ -189,3 +196,8 @@ repos:
     - -sn
     - --rcfile=.pylintrc
     - --fail-on=I
+
+- repo: https://github.com/codespell-project/codespell
+  rev: v2.3.0
+  hooks:
+  - id: codespell

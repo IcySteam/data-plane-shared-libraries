@@ -48,12 +48,12 @@ int main(int argc, char* argv[]) {
   cap_t caps = cap_get_proc();
   absl::Cleanup caps_cleaner = [caps] { cap_free(caps); };
   if (caps == nullptr) {
-    bin_response.set_greeting("Failed to get capabilites.");
+    bin_response.set_greeting("Failed to get capabilities.");
   } else if (cap_t empty_caps = cap_init();
              cap_compare(caps, empty_caps) == 0) {
     // All good.
     cap_free(empty_caps);
-    bin_response.set_greeting("Empty capabilities' set as expected.");
+    bin_response.set_greeting("Empty capabilities set as expected.");
   } else {
     char* cap_str = cap_to_text(caps, nullptr);
     bin_response.set_greeting(

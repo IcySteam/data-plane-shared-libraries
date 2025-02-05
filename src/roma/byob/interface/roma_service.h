@@ -45,6 +45,8 @@
 #include "src/core/common/uuid/uuid.h"
 #include "src/roma/byob/config/config.h"
 #include "src/roma/byob/dispatcher/dispatcher.h"
+#include "src/roma/byob/utility/utils.h"
+#include "src/roma/config/function_binding_object_v2.h"
 #include "src/util/execution_token.h"
 #include "src/util/status_macro/status_macros.h"
 
@@ -56,7 +58,8 @@ class LocalHandle final {
  public:
   LocalHandle(int pid, std::string_view mounts,
               std::string_view control_socket_path,
-              std::string_view udf_socket_path, std::string_view log_dir);
+              std::string_view udf_socket_path, std::string_view sock_dir,
+              std::string_view log_dir, bool enable_seccomp_filter);
   ~LocalHandle();
 
  private:
@@ -65,11 +68,12 @@ class LocalHandle final {
 
 class ByobHandle final {
  public:
-  ByobHandle(int pid, std::string_view mounts, std::string_view udf_socket_path,
-             std::string_view control_socket_path, std::string_view sockdir,
+  ByobHandle(int pid, std::string_view mounts,
+             std::string_view control_socket_path,
+             std::string_view udf_socket_path, std::string_view sock_dir,
              std::string container_name, std::string_view log_dir,
              std::uint64_t memory_limit_soft, std::uint64_t memory_limit_hard,
-             bool debug_mode);
+             bool debug_mode, bool enable_seccomp_filter);
   ~ByobHandle();
 
  private:
@@ -77,63 +81,36 @@ class ByobHandle final {
   std::string container_name_;
 };
 
-}  // namespace internal::roma_service
+class NsJailHandle final {
+ public:
+  NsJailHandle(int pid, std::string_view mounts,
+               std::string_view control_socket_path,
+               std::string_view udf_socket_path, std::string_view socket_dir,
+               std::string container_name, std::string_view log_dir,
+               std::uint64_t memory_limit_soft, std::uint64_t memory_limit_hard,
+               bool enable_seccomp_filter);
+  ~NsJailHandle();
 
-enum class Mode {
-  kModeSandbox,
-  kModeNoSandbox,
-  kModeSandboxDebug,
+ private:
+  int pid_;
 };
 
-inline bool AbslParseFlag(absl::string_view text, Mode* mode,
-                          std::string* error) {
-  if (text == "on") {
-    *mode = Mode::kModeSandbox;
-    return true;
-  }
-  if (text == "debug") {
-    *mode = Mode::kModeSandboxDebug;
-    return true;
-  }
-  if (text == "off") {
-    *mode = Mode::kModeNoSandbox;
-    return true;
-  }
-  *error = "Supported values: on, off, debug.";
-  return false;
-}
-
-inline std::string AbslUnparseFlag(Mode mode) {
-  switch (mode) {
-    case Mode::kModeSandbox:
-      return "on";
-    case Mode::kModeSandboxDebug:
-      return "debug";
-    case Mode::kModeNoSandbox:
-      return "off";
-    default:
-      return absl::StrCat(mode);
-  }
-}
+}  // namespace internal::roma_service
 
 template <typename TMetadata = google::scp::roma::DefaultMetadata>
 class RomaService final {
  public:
   absl::Status Init(Config<TMetadata> config, Mode mode) {
-    char socket_dir_tmpl[20] = "/tmp/sockdir_XXXXXX";
-    if (::mkdtemp(socket_dir_tmpl) == nullptr) {
-      return absl::ErrnoToStatus(errno, "mkdtemp(socket_dir)");
-    }
-    socket_dir_ = socket_dir_tmpl;
+    socket_dir_ = std::filesystem::path(RUN_WORKERS_PATH) / "socket_dir";
+    PS_RETURN_IF_ERROR(
+        ::privacy_sandbox::server_common::byob::CreateDirectories(socket_dir_));
     std::filesystem::permissions(socket_dir_,
                                  std::filesystem::perms::owner_all |
                                      std::filesystem::perms::group_all |
                                      std::filesystem::perms::others_all);
-    char log_dir_tmpl[20] = "/tmp/log_dir_XXXXXX";
-    if (::mkdtemp(log_dir_tmpl) == nullptr) {
-      return absl::ErrnoToStatus(errno, "mkdtemp(log_dir)");
-    }
-    log_dir_ = log_dir_tmpl;
+    log_dir_ = std::filesystem::path(RUN_WORKERS_PATH) / "log_dir";
+    PS_RETURN_IF_ERROR(
+        ::privacy_sandbox::server_common::byob::CreateDirectories(log_dir_));
     std::filesystem::permissions(log_dir_,
                                  std::filesystem::perms::owner_all |
                                      std::filesystem::perms::group_all |
@@ -146,19 +123,30 @@ class RomaService final {
       return absl::ErrnoToStatus(errno, "fork()");
     }
     switch (mode) {
-      case Mode::kModeSandbox:
-      case Mode::kModeSandboxDebug:
+      case Mode::kModeGvisorSandbox:
+        [[fallthrough]];
+      case Mode::kModeGvisorSandboxDebug:
         handle_.emplace<internal::roma_service::ByobHandle>(
             pid, config.lib_mounts, control_socket_path.c_str(),
             udf_socket_path.c_str(), socket_dir_.c_str(),
             std::move(config.roma_container_name), log_dir_.c_str(),
             config.memory_limit_soft, config.memory_limit_hard,
-            /*debug=*/mode == Mode::kModeSandboxDebug);
+            /*debug=*/mode == Mode::kModeGvisorSandboxDebug,
+            /*enable_seccomp_filter=*/config.enable_seccomp_filter);
         break;
-      case Mode::kModeNoSandbox:
+      case Mode::kModeMinimalSandbox:
         handle_.emplace<internal::roma_service::LocalHandle>(
             pid, config.lib_mounts, control_socket_path.c_str(),
-            udf_socket_path.c_str(), log_dir_.c_str());
+            udf_socket_path.c_str(), socket_dir_.c_str(), log_dir_.c_str(),
+            /*enable_seccomp_filter=*/config.enable_seccomp_filter);
+        break;
+      case Mode::kModeNsJailSandbox:
+        handle_.emplace<internal::roma_service::NsJailHandle>(
+            pid, config.lib_mounts, control_socket_path.c_str(),
+            udf_socket_path.c_str(), socket_dir_.c_str(),
+            std::move(config.roma_container_name), log_dir_.c_str(),
+            config.memory_limit_soft, config.memory_limit_hard,
+            config.enable_seccomp_filter);
         break;
       default:
         return absl::InternalError("Unsupported mode in switch");
@@ -207,20 +195,21 @@ class RomaService final {
 
   template <typename Response, typename Request>
   absl::StatusOr<google::scp::roma::ExecutionToken> ProcessRequest(
-      std::string_view code_token, Request request, TMetadata /*metadata*/,
+      std::string_view code_token, const Request& request,
+      TMetadata /*metadata*/,
       absl::AnyInvocable<void(absl::StatusOr<Response>,
                               absl::StatusOr<std::string_view>) &&>
           callback) {
-    return dispatcher_->ProcessRequest(code_token, std::move(request),
+    return dispatcher_->ProcessRequest(code_token, request,
                                        std::move(callback));
   }
 
   template <typename Response, typename Request>
   absl::StatusOr<google::scp::roma::ExecutionToken> ProcessRequest(
-      std::string_view code_token, Request request, TMetadata metadata,
+      std::string_view code_token, const Request& request, TMetadata metadata,
       absl::AnyInvocable<void(absl::StatusOr<Response>) &&> callback) {
     return ProcessRequest<Response>(
-        code_token, std::move(request), std::move(metadata),
+        code_token, request, std::move(metadata),
         [callback = std::move(callback)](
             absl::StatusOr<Response> response,
             absl::StatusOr<std::string_view> /*logs*/) mutable {
@@ -230,11 +219,11 @@ class RomaService final {
 
   template <typename Response, typename Request>
   absl::StatusOr<google::scp::roma::ExecutionToken> ProcessRequest(
-      std::string_view code_token, Request request, TMetadata metadata,
+      std::string_view code_token, const Request& request, TMetadata metadata,
       absl::Notification& notif,
       absl::StatusOr<std::unique_ptr<Response>>& output) {
     return ProcessRequest<Response>(
-        code_token, std::move(request), std::move(metadata),
+        code_token, request, std::move(metadata),
         [&notif, &output](absl::StatusOr<Response> response,
                           absl::StatusOr<std::string_view> /*logs*/) {
           if (response.ok()) {
@@ -251,7 +240,8 @@ class RomaService final {
   std::filesystem::path socket_dir_;
   std::filesystem::path log_dir_;
   std::variant<std::monostate, internal::roma_service::LocalHandle,
-               internal::roma_service::ByobHandle>
+               internal::roma_service::ByobHandle,
+               internal::roma_service::NsJailHandle>
       handle_;
   std::optional<Dispatcher> dispatcher_;
 };

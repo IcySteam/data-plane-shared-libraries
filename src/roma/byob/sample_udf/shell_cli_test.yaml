@@ -46,7 +46,9 @@ commandTests:
             --commands_file \(Text file containing shell commands to execute\.\);
               default: ;
             --num_workers \(Number of workers\.\); default: 1;
-            --sandbox \(Run BYOB in sandbox mode\.\); default: on;
+            --sandbox \(Run BYOB with mode: gvisor, gvisor-debug, minimal\.\);
+              default: minimal;
+            --syscall_filter \(Whether to enable syscall filtering\.\); default: false;
             --udf_log_file \(Directory for storing UDF logs\.\); default: ;
 
   - name: shell-cli sandbox flag
@@ -54,9 +56,9 @@ commandTests:
     args: ['--sandbox=unknown']
     exitCode: 1
     expectedError:
-      - "ERROR: Illegal value 'unknown' specified for flag 'sandbox'; Supported values: on, off, debug."
+      - "ERROR: Illegal value 'unknown' specified for flag 'sandbox'; Supported values: gvisor, gvisor-debug, minimal."
 
-  - name: shell-cli help command
+  - name: shell-cli help commands file
     command: /tools/shell-cli
     args: ['--commands_file=/tools/help.commands']
     exitCode: 0
