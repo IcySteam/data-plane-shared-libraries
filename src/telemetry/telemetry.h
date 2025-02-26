@@ -33,6 +33,7 @@
 #include "opentelemetry/sdk/metrics/meter.h"
 #include "opentelemetry/sdk/metrics/meter_provider.h"
 #include "opentelemetry/sdk/trace/tracer.h"
+#include "src/telemetry/flag/config.pb.h"
 
 namespace privacy_sandbox::server_common {
 
@@ -52,11 +53,36 @@ void InitTelemetry(std::string service_name, std::string build_version,
 // Must be called to initialize metrics functionality.
 // If `ConfigurePrivateMetrics` is not called, all metrics recording will be
 // NoOp. Returned MetricReader is not shared, invoker takes ownership.
-std::unique_ptr<opentelemetry::metrics::MeterProvider> ConfigurePrivateMetrics(
+std::unique_ptr<opentelemetry::sdk::metrics::MeterProvider>
+ConfigurePrivateMetrics(
     opentelemetry::sdk::resource::Resource resource,
     const opentelemetry::sdk::metrics::PeriodicExportingMetricReaderOptions&
         options,
     absl::optional<std::string> collector_endpoint = absl::nullopt);
+
+void ConfigureGoogleMetrics(
+    opentelemetry::sdk::metrics::MeterProvider* provider,
+    absl::optional<telemetry::GoogleTelemetryConfig> google_config =
+        absl::nullopt,
+    absl::optional<std::string> google_collector_endpoint = absl::nullopt,
+    const absl::optional<std::set<std::string_view>>& available_metrics =
+        absl::nullopt,
+    const absl::optional<std::set<std::string_view>>& default_metrics =
+        absl::nullopt);
+
+std::unique_ptr<opentelemetry::metrics::MeterProvider>
+ConfigurePrivateMetricsWithGoogleMetrics(
+    opentelemetry::sdk::resource::Resource resource,
+    const opentelemetry::sdk::metrics::PeriodicExportingMetricReaderOptions&
+        options,
+    absl::optional<std::string> collector_endpoint = absl::nullopt,
+    absl::optional<telemetry::GoogleTelemetryConfig> google_config =
+        absl::nullopt,
+    const absl::optional<std::set<std::string_view>>&
+        available_metrics_for_google_export = absl::nullopt,
+    const absl::optional<std::set<std::string_view>>&
+        default_metrics_for_google_export = absl::nullopt,
+    absl::optional<std::string> google_collector_endpoint = absl::nullopt);
 
 // Must be called to initialize tracing functionality.
 // If `ConfigureTracer` is not called, all tracing will be NoOp.

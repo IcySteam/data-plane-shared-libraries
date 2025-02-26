@@ -1,0 +1,20 @@
+diff --git a/BUILD.bazel b/BUILD.bazel
+index 643d71f..f1c9792 100644
+--- a/BUILD.bazel
++++ b/BUILD.bazel
+@@ -57,7 +57,6 @@ cc_library(
+         # WebAssembly support for threads is... fraught at every level.
+         "@platforms//cpu:wasm32": [],
+         "@platforms//cpu:wasm64": [],
+-        "@platforms//os:emscripten": [],
+         "@platforms//os:wasi": [],
+         "@platforms//os:windows": [],
+         "//conditions:default": ["-pthread"],
+@@ -70,7 +69,6 @@ cc_library(
+         # WebAssembly support for threads is... fraught at every level.
+         "@platforms//cpu:wasm32": [],
+         "@platforms//cpu:wasm64": [],
+-        "@platforms//os:emscripten": [],
+         "@platforms//os:wasi": [],
+         "@platforms//os:windows": [],
+         "//conditions:default": ["-pthread"],

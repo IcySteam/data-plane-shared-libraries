@@ -15,10 +15,13 @@
 #include "telemetry.h"
 
 #include <memory>
+#include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
+#include "absl/status/statusor.h"
 #include "opentelemetry/metrics/provider.h"
 #include "opentelemetry/nostd/shared_ptr.h"
 #include "opentelemetry/sdk/logs/batch_log_record_processor_factory.h"
@@ -27,6 +30,7 @@
 #include "opentelemetry/sdk/logs/logger_provider_factory.h"
 #include "opentelemetry/sdk/logs/simple_log_record_processor.h"
 #include "opentelemetry/sdk/logs/simple_log_record_processor_factory.h"
+#include "opentelemetry/sdk/metrics/export/metric_filter.h"
 #include "opentelemetry/sdk/metrics/meter.h"
 #include "opentelemetry/sdk/metrics/view/view_registry.h"
 #include "opentelemetry/sdk/trace/samplers/always_on_factory.h"
@@ -34,6 +38,8 @@
 #include "opentelemetry/sdk/trace/tracer_provider_factory.h"
 #include "opentelemetry/sdk/version/version.h"
 #include "opentelemetry/trace/provider.h"
+#include "src/telemetry/flag/config.pb.h"
+#include "src/telemetry/flag/google_telemetry_flag.h"
 
 #include "init.h"
 #include "telemetry_provider.h"
@@ -59,6 +65,46 @@ using opentelemetry::trace::TracerProvider;
 
 namespace privacy_sandbox::server_common {
 
+namespace {
+
+std::unique_ptr<metric_sdk::MetricFilter> GetGoogleTelemetryMetricFilter(
+    privacy_sandbox::server_common::telemetry::GoogleTelemetryConfigWrapper&
+        config_wrapper) {
+  std::set<std::string_view> metrics = config_wrapper.GetMetricsToExport();
+
+  metric_sdk::MetricFilter::TestMetricFn test_metric_fn =
+      [metrics](
+          const opentelemetry::sdk::instrumentationscope::InstrumentationScope&
+              scope,
+          opentelemetry::nostd::string_view name,
+          const metric_sdk::InstrumentType& type,
+          opentelemetry::nostd::string_view unit)
+      -> metric_sdk::MetricFilter::MetricFilterResult {
+    ABSL_LOG(INFO) << "Filtering metric: " << name;
+    if (metrics.find(name) != metrics.end()) {
+      ABSL_LOG(INFO) << name << " will be exported to Google.";
+      return metric_sdk::MetricFilter::MetricFilterResult::kAccept;
+    }
+    ABSL_LOG(INFO) << name << " does not match a metric to export to Google.";
+    return metric_sdk::MetricFilter::MetricFilterResult::kDrop;
+  };
+
+  metric_sdk::MetricFilter::TestAttributesFn test_attributes_fn =
+      [](const opentelemetry::sdk::instrumentationscope::InstrumentationScope&
+             scope,
+         opentelemetry::nostd::string_view name,
+         const metric_sdk::InstrumentType& type,
+         opentelemetry::nostd::string_view unit,
+         const metric_sdk::PointAttributes& attributes)
+      -> metric_sdk::MetricFilter::AttributesFilterResult {
+    return metric_sdk::MetricFilter::AttributesFilterResult::kAccept;
+  };
+
+  return metric_sdk::MetricFilter::Create(test_metric_fn, test_attributes_fn);
+}
+
+}  // namespace
+
 void InitTelemetry(std::string service_name, std::string build_version,
                    bool trace_enabled, bool metric_enabled, bool log_enabled) {
   TelemetryProvider::Init(service_name, build_version, trace_enabled,
@@ -83,17 +129,70 @@ void ConfigureMetrics(
   metrics_api::Provider::SetMeterProvider(provider);
 }
 
-std::unique_ptr<metrics_api::MeterProvider> ConfigurePrivateMetrics(
+std::unique_ptr<metric_sdk::MeterProvider> ConfigurePrivateMetrics(
     Resource resource,
     const metric_sdk::PeriodicExportingMetricReaderOptions& options,
     absl::optional<std::string> collector_endpoint) {
+  auto provider = std::make_unique<metric_sdk::MeterProvider>(
+      std::make_unique<metric_sdk::ViewRegistry>(), std::move(resource));
+
+  provider->AddMetricReader(
+      CreatePeriodicExportingMetricReader(options, collector_endpoint));
+
+  return provider;
+}
+
+void ConfigureGoogleMetrics(
+    metric_sdk::MeterProvider* provider,
+    absl::optional<telemetry::GoogleTelemetryConfig> google_config,
+    absl::optional<std::string> google_collector_endpoint,
+    const absl::optional<std::set<std::string_view>>& available_metrics,
+    const absl::optional<std::set<std::string_view>>& default_metrics) {
+  if (!google_config.has_value() || !available_metrics.has_value() ||
+      !default_metrics.has_value()) {
+    return;
+  }
+  absl::StatusOr<telemetry::GoogleTelemetryConfigWrapper> config_wrapper =
+      telemetry::GoogleTelemetryConfigWrapper::Create(google_config.value(),
+                                                      available_metrics.value(),
+                                                      default_metrics.value());
+  if (!config_wrapper.ok()) {
+    return;
+  }
+
+  const metric_sdk::PeriodicExportingMetricReaderOptions& options =
+      metric_sdk::PeriodicExportingMetricReaderOptions{
+          telemetry::kGoogleTelemetryMetricsExportInterval,
+          telemetry::kGoogleTelemetryMetricsExportTimeout};
+  std::unique_ptr<metric_sdk::MetricFilter> metric_filter =
+      GetGoogleTelemetryMetricFilter(config_wrapper.value());
+
+  provider->AddMetricReader(
+      CreatePeriodicExportingMetricReader(options, google_collector_endpoint),
+      std::move(metric_filter));
+}
+
+std::unique_ptr<metrics_api::MeterProvider>
+ConfigurePrivateMetricsWithGoogleMetrics(
+    Resource resource,
+    const metric_sdk::PeriodicExportingMetricReaderOptions& options,
+    absl::optional<std::string> collector_endpoint,
+    absl::optional<telemetry::GoogleTelemetryConfig> google_config,
+    const absl::optional<std::set<std::string_view>>&
+        available_metrics_for_google_export,
+    const absl::optional<std::set<std::string_view>>&
+        default_metrics_for_google_export,
+    absl::optional<std::string> google_collector_endpoint) {
   if (!TelemetryProvider::GetInstance().metric_enabled()) {
     return std::make_unique<metrics_api::NoopMeterProvider>();
   }
+
   auto provider = std::make_unique<metric_sdk::MeterProvider>(
       std::make_unique<metric_sdk::ViewRegistry>(), std::move(resource));
-  provider->AddMetricReader(
-      CreatePeriodicExportingMetricReader(options, collector_endpoint));
+  ConfigureGoogleMetrics(
+      provider.get(), google_config, google_collector_endpoint,
+      available_metrics_for_google_export, default_metrics_for_google_export);
+
   return provider;
 }
 
