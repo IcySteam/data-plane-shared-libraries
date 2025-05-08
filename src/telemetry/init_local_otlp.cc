@@ -53,6 +53,15 @@ CreatePeriodicExportingMetricReader(
       std::move(exporter), options);
 }
 
+absl::StatusOr<std::unique_ptr<opentelemetry::sdk::metrics::MetricReader>>
+CreatePeriodicExportingMetricReaderForGoogleTelemetry(
+    const opentelemetry::sdk::metrics::PeriodicExportingMetricReaderOptions&
+        reader_options,
+    std::string otlp_endpoint, std::string quota_project,
+    std::string wip_provider, std::string service_account_to_impersonate) {
+  return absl::UnimplementedError("Not Implemented");
+}
+
 std::unique_ptr<opentelemetry::sdk::logs::LogRecordExporter>
 CreateLogRecordExporter(absl::optional<std::string> collector_endpoint) {
   return opentelemetry::exporter::otlp::OtlpGrpcLogRecordExporterFactory::

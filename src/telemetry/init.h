@@ -20,6 +20,8 @@
 #include <memory>
 #include <string>
 
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/types/optional.h"
 #include "opentelemetry/sdk/logs/exporter.h"
 #include "opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader.h"
@@ -38,6 +40,13 @@ CreatePeriodicExportingMetricReader(
     const opentelemetry::sdk::metrics::PeriodicExportingMetricReaderOptions&
         options,
     absl::optional<std::string> collector_endpoint = absl::nullopt);
+
+absl::StatusOr<std::unique_ptr<opentelemetry::sdk::metrics::MetricReader>>
+CreatePeriodicExportingMetricReaderForGoogleTelemetry(
+    const opentelemetry::sdk::metrics::PeriodicExportingMetricReaderOptions&
+        reader_options,
+    std::string otlp_endpoint, std::string quota_project,
+    std::string wip_provider, std::string service_account_to_impersonate);
 
 std::unique_ptr<opentelemetry::sdk::logs::LogRecordExporter>
 CreateLogRecordExporter(

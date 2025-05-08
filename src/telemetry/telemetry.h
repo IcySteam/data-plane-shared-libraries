@@ -67,7 +67,8 @@ void ConfigureGoogleMetrics(
     telemetry::GoogleTelemetryConfig google_config,
     const std::set<std::string>& available_metrics,
     const std::set<std::string>& default_metrics,
-    std::string google_collector_endpoint);
+    std::string google_otlp_endpoint, std::string quota_project,
+    std::string wip_provider, std::string service_account_to_impersonate);
 
 // Same as `ConfigurePrivateMetrics`, but also add a MetricReader to the created
 // SDK MeterProvider for metrics export to Google.
@@ -79,7 +80,8 @@ ConfigurePrivateMetricsWithGoogleMetrics(
     telemetry::GoogleTelemetryConfig google_config,
     const std::set<std::string>& available_metrics,
     const std::set<std::string>& default_metrics,
-    std::string google_collector_endpoint,
+    std::string google_otlp_endpoint, std::string quota_project,
+    std::string wip_provider, std::string service_account_to_impersonate,
     absl::optional<std::string> collector_endpoint = absl::nullopt);
 
 // Must be called to initialize tracing functionality.

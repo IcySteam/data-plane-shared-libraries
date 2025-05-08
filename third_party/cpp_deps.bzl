@@ -125,7 +125,8 @@ def cpp_dependencies():
         http_archive,
         name = "io_opentelemetry_cpp",
         patch_args = ["-p1"],
-        # TODO(b/411264995): Remove this patch once https://github.com/open-telemetry/opentelemetry-cpp/issues/3354 is fixed.
+        # TODO(b/411264995): Remove the patch on //api/include/opentelemetry/nostd/type_traits.h once https://github.com/open-telemetry/opentelemetry-cpp/issues/3354 is fixed.
+        # TODO(b/421813969): Remove the patch on //exporters/otlp/include/opentelemetry/exporters/otlp/otlp_grpc_client_options.h once https://github.com/open-telemetry/opentelemetry-cpp/issues/3402 is fixed.
         patches = [Label("//third_party:io_opentelemetry_cpp.patch")],
         sha256 = "2562959b23c8216406d13c6726aa14dc9cbbf15d9efdc8b7ce0aa5c1abb0be1c",
         strip_prefix = "opentelemetry-cpp-1.20.0",

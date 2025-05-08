@@ -152,12 +152,14 @@ void ConfigureGoogleMetrics(
     telemetry::GoogleTelemetryConfig google_config,
     const std::set<std::string>& available_metrics,
     const std::set<std::string>& default_metrics,
-    std::string google_collector_endpoint) {
+    std::string google_otlp_endpoint, std::string quota_project,
+    std::string wip_provider, std::string service_account_to_impersonate) {
   absl::StatusOr<telemetry::GoogleTelemetryConfigWrapper> config_wrapper =
       telemetry::GoogleTelemetryConfigWrapper::Create(
           google_config, available_metrics, default_metrics);
   if (!config_wrapper.ok()) {
     PS_LOG(WARNING, log::SystemLogContext::Get())
+        << "Failed to create GoogleTelemetryConfigWrapper: "
         << config_wrapper.status() << "\n"
         << "Google metrics configuration failed. Metrics will not "
            "be exported to Google.";
@@ -171,9 +173,20 @@ void ConfigureGoogleMetrics(
   std::unique_ptr<metric_sdk::MetricFilter> metric_filter =
       GetGoogleTelemetryMetricFilter(config_wrapper.value());
 
-  provider->AddMetricReader(
-      CreatePeriodicExportingMetricReader(options, google_collector_endpoint),
-      std::move(metric_filter));
+  auto google_metric_reader =
+      CreatePeriodicExportingMetricReaderForGoogleTelemetry(
+          options, google_otlp_endpoint, quota_project, wip_provider,
+          service_account_to_impersonate);
+  if (!google_metric_reader.ok()) {
+    PS_LOG(WARNING, log::SystemLogContext::Get())
+        << "Failed to add MetricReader for Google telemetry: "
+        << google_metric_reader.status() << "\n"
+        << "Google metrics configuration failed. Metrics will not "
+           "be exported to Google.";
+    return;
+  }
+  provider->AddMetricReader(*std::move(google_metric_reader),
+                            std::move(metric_filter));
 }
 
 std::unique_ptr<metrics_api::MeterProvider>
@@ -184,7 +197,8 @@ ConfigurePrivateMetricsWithGoogleMetrics(
     telemetry::GoogleTelemetryConfig google_config,
     const std::set<std::string>& available_metrics,
     const std::set<std::string>& default_metrics,
-    std::string google_collector_endpoint,
+    std::string google_otlp_endpoint, std::string quota_project,
+    std::string wip_provider, std::string service_account_to_impersonate,
     absl::optional<std::string> collector_endpoint) {
   if (!TelemetryProvider::GetInstance().metric_enabled()) {
     return std::make_unique<metrics_api::NoopMeterProvider>();
@@ -196,7 +210,8 @@ ConfigurePrivateMetricsWithGoogleMetrics(
       CreatePeriodicExportingMetricReader(options, collector_endpoint));
 
   ConfigureGoogleMetrics(provider.get(), google_config, available_metrics,
-                         default_metrics, google_collector_endpoint);
+                         default_metrics, google_otlp_endpoint, quota_project,
+                         wip_provider, service_account_to_impersonate);
 
   return provider;
 }

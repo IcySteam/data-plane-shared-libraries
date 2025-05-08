@@ -22,3 +22,44 @@ index 3a64b5db1..3517bcc52 100644
  #endif
  
  OPENTELEMETRY_BEGIN_NAMESPACE
+ 
+diff --git a/exporters/otlp/include/opentelemetry/exporters/otlp/otlp_grpc_client_options.h b/exporters/otlp/include/opentelemetry/exporters/otlp/otlp_grpc_client_options.h
+index babb4cac..bb9cc942 100644
+--- a/exporters/otlp/include/opentelemetry/exporters/otlp/otlp_grpc_client_options.h
++++ b/exporters/otlp/include/opentelemetry/exporters/otlp/otlp_grpc_client_options.h
+@@ -3,6 +3,8 @@
+
+ #pragma once
+
++#include <grpcpp/grpcpp.h>
++
+ #include "opentelemetry/exporters/otlp/otlp_environment.h"
+ #include "opentelemetry/version.h"
+
+@@ -43,6 +45,9 @@ struct OtlpGrpcClientOptions
+   std::string ssl_client_cert_string;
+ #endif
+
++  /** Use custom ChannelCredentials, instead of SSL credentials or insecure. */
++  std::shared_ptr<grpc::ChannelCredentials> credentials;
++
+   /** Export timeout. */
+   std::chrono::system_clock::duration timeout;
+
+diff --git a/exporters/otlp/src/otlp_grpc_client.cc b/exporters/otlp/src/otlp_grpc_client.cc
+index 4d2fb6d3..4686e1fc 100644
+--- a/exporters/otlp/src/otlp_grpc_client.cc
++++ b/exporters/otlp/src/otlp_grpc_client.cc
+@@ -392,7 +392,11 @@ std::shared_ptr<grpc::Channel> OtlpGrpcClient::MakeChannel(const OtlpGrpcClientO
+   }
+ #endif  // ENABLE_OTLP_RETRY_PREVIEW
+
+-  if (options.use_ssl_credentials)
++  if (options.credentials)
++  {
++    channel = grpc::CreateCustomChannel(grpc_target, options.credentials, grpc_arguments);
++  }
++  else if (options.use_ssl_credentials)
+   {
+     grpc::SslCredentialsOptions ssl_opts;
+     ssl_opts.pem_root_certs = GetFileContentsOrInMemoryContents(
