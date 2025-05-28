@@ -68,6 +68,10 @@ cc_library(
     deps = [
         ":init",
         ":telemetry_provider",
+        "//src/logger:request_context_impl",
+        "//src/logger:request_context_logger",
+        "//src/telemetry/flag:config_cc_proto",
+        "//src/telemetry/flag:google_telemetry_flag",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/types:optional",

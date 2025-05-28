@@ -14,11 +14,14 @@
 
 #include "telemetry.h"
 
+#include <chrono>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/status/statusor.h"
 #include "opentelemetry/metrics/provider.h"
 #include "opentelemetry/nostd/shared_ptr.h"
 #include "opentelemetry/sdk/logs/batch_log_record_processor_factory.h"
@@ -27,6 +30,7 @@
 #include "opentelemetry/sdk/logs/logger_provider_factory.h"
 #include "opentelemetry/sdk/logs/simple_log_record_processor.h"
 #include "opentelemetry/sdk/logs/simple_log_record_processor_factory.h"
+#include "opentelemetry/sdk/metrics/export/metric_filter.h"
 #include "opentelemetry/sdk/metrics/meter.h"
 #include "opentelemetry/sdk/metrics/view/view_registry.h"
 #include "opentelemetry/sdk/trace/samplers/always_on_factory.h"
@@ -34,6 +38,10 @@
 #include "opentelemetry/sdk/trace/tracer_provider_factory.h"
 #include "opentelemetry/sdk/version/version.h"
 #include "opentelemetry/trace/provider.h"
+#include "src/logger/request_context_impl.h"
+#include "src/logger/request_context_logger.h"
+#include "src/telemetry/flag/config.pb.h"
+#include "src/telemetry/flag/google_telemetry_flag.h"
 
 #include "init.h"
 #include "telemetry_provider.h"
@@ -58,6 +66,48 @@ using opentelemetry::trace::Tracer;
 using opentelemetry::trace::TracerProvider;
 
 namespace privacy_sandbox::server_common {
+
+namespace {
+
+static constexpr std::chrono::milliseconds
+    kGoogleTelemetryMetricsExportInterval = std::chrono::milliseconds(60000);
+static constexpr std::chrono::milliseconds
+    kGoogleTelemetryMetricsExportTimeout = std::chrono::milliseconds(20000);
+
+std::unique_ptr<metric_sdk::MetricFilter> GetGoogleTelemetryMetricFilter(
+    privacy_sandbox::server_common::telemetry::GoogleTelemetryConfigWrapper&
+        config_wrapper) {
+  std::set<std::string> metrics = config_wrapper.GetMetricsToExport();
+
+  metric_sdk::MetricFilter::TestMetricFn test_metric_fn =
+      [metrics](
+          const opentelemetry::sdk::instrumentationscope::InstrumentationScope&
+              scope,
+          opentelemetry::nostd::string_view name,
+          const metric_sdk::InstrumentType& type,
+          opentelemetry::nostd::string_view unit)
+      -> metric_sdk::MetricFilter::MetricFilterResult {
+    if (metrics.find(std::string(name)) != metrics.end()) {
+      return metric_sdk::MetricFilter::MetricFilterResult::kAccept;
+    }
+    return metric_sdk::MetricFilter::MetricFilterResult::kDrop;
+  };
+
+  metric_sdk::MetricFilter::TestAttributesFn test_attributes_fn =
+      [](const opentelemetry::sdk::instrumentationscope::InstrumentationScope&
+             scope,
+         opentelemetry::nostd::string_view name,
+         const metric_sdk::InstrumentType& type,
+         opentelemetry::nostd::string_view unit,
+         const metric_sdk::PointAttributes& attributes)
+      -> metric_sdk::MetricFilter::AttributesFilterResult {
+    return metric_sdk::MetricFilter::AttributesFilterResult::kAccept;
+  };
+
+  return metric_sdk::MetricFilter::Create(test_metric_fn, test_attributes_fn);
+}
+
+}  // namespace
 
 void InitTelemetry(std::string service_name, std::string build_version,
                    bool trace_enabled, bool metric_enabled, bool log_enabled) {
@@ -94,6 +144,60 @@ std::unique_ptr<metrics_api::MeterProvider> ConfigurePrivateMetrics(
       std::make_unique<metric_sdk::ViewRegistry>(), std::move(resource));
   provider->AddMetricReader(
       CreatePeriodicExportingMetricReader(options, collector_endpoint));
+  return provider;
+}
+
+void ConfigureGoogleMetrics(
+    opentelemetry::sdk::metrics::MeterProvider* provider,
+    telemetry::GoogleTelemetryConfig google_config,
+    const std::set<std::string>& available_metrics,
+    const std::set<std::string>& default_metrics,
+    std::string google_collector_endpoint) {
+  absl::StatusOr<telemetry::GoogleTelemetryConfigWrapper> config_wrapper =
+      telemetry::GoogleTelemetryConfigWrapper::Create(
+          google_config, available_metrics, default_metrics);
+  if (!config_wrapper.ok()) {
+    PS_LOG(WARNING, log::SystemLogContext::Get())
+        << config_wrapper.status() << "\n"
+        << "Google metrics configuration failed. Metrics will not "
+           "be exported to Google.";
+    return;
+  }
+
+  const metric_sdk::PeriodicExportingMetricReaderOptions& options =
+      metric_sdk::PeriodicExportingMetricReaderOptions{
+          kGoogleTelemetryMetricsExportInterval,
+          kGoogleTelemetryMetricsExportTimeout};
+  std::unique_ptr<metric_sdk::MetricFilter> metric_filter =
+      GetGoogleTelemetryMetricFilter(config_wrapper.value());
+
+  provider->AddMetricReader(
+      CreatePeriodicExportingMetricReader(options, google_collector_endpoint),
+      std::move(metric_filter));
+}
+
+std::unique_ptr<metrics_api::MeterProvider>
+ConfigurePrivateMetricsWithGoogleMetrics(
+    opentelemetry::sdk::resource::Resource resource,
+    const opentelemetry::sdk::metrics::PeriodicExportingMetricReaderOptions&
+        options,
+    telemetry::GoogleTelemetryConfig google_config,
+    const std::set<std::string>& available_metrics,
+    const std::set<std::string>& default_metrics,
+    std::string google_collector_endpoint,
+    absl::optional<std::string> collector_endpoint) {
+  if (!TelemetryProvider::GetInstance().metric_enabled()) {
+    return std::make_unique<metrics_api::NoopMeterProvider>();
+  }
+
+  auto provider = std::make_unique<metric_sdk::MeterProvider>(
+      std::make_unique<metric_sdk::ViewRegistry>(), std::move(resource));
+  provider->AddMetricReader(
+      CreatePeriodicExportingMetricReader(options, collector_endpoint));
+
+  ConfigureGoogleMetrics(provider.get(), google_config, available_metrics,
+                         default_metrics, google_collector_endpoint);
+
   return provider;
 }
 

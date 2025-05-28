@@ -73,6 +73,7 @@ alias(
         timeout = "short",
         srcs = ["telemetry_flag_test.cc"],
         deps = [
+            ":config_cc_proto",
             ":telemetry_flag_{}".format(flavor),
             "@com_google_absl//absl/log:absl_log",
             "@com_google_absl//absl/log:check",
@@ -81,6 +82,37 @@ alias(
     )
     for flavor in ("non_prod", "prod")
 ]
+
+cc_library(
+    name = "google_telemetry_flag",
+    srcs = [
+        "google_telemetry_flag.cc",
+    ],
+    hdrs = ["google_telemetry_flag.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":config_cc_proto",
+        "//src/logger:request_context_impl",
+        "//src/logger:request_context_logger",
+        "//src/metric:definition",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_protobuf//:protobuf",
+        "@com_googlesource_code_re2//:re2",
+    ],
+)
+
+cc_test(
+    name = "google_telemetry_flag_test",
+    srcs = ["google_telemetry_flag_test.cc"],
+    deps = [
+        ":config_cc_proto",
+        ":google_telemetry_flag",
+        "//src/logger:request_context_impl",
+        "@com_google_absl//absl/log:check",
+        "@com_google_googletest//:gtest_main",
+        "@io_opentelemetry_cpp//sdk/src/logs",
+    ],
+)
 
 proto_library(
     name = "config_proto",

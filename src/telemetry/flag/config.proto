@@ -21,6 +21,8 @@ message TelemetryConfig {
     UNKNOWN_TYPE = 0;
 
     // No telemetry (metrics/traces).
+    //
+    // Also disables telemetry sharing with Google.
     OFF = 1;
 
     // Production mode.
@@ -106,4 +108,62 @@ message MetricConfig {
   // overwrite histogram_boundaries in metric definition if being set.
   // Only used by custom_udf_metric.
   repeated double histogram_boundaries = 10;
+}
+
+// This proto conforms to the GoogleTelemetryConfig format set forth by the AdTech Telemetry Ingestion Configuration design.
+// copybara:strip_begin(internal)
+// Design doc: go/adtech-telemetry-configuration
+// copybara:strip_end
+//
+// Currently, GoogleTelemetryConfig is also used by Aggregation Service outside of data-plane-shared-libraries.
+// copybara:strip_begin(internal)
+// Link to Aggregation Service CL: tg/2446047
+// copybara:strip_end
+message GoogleTelemetryConfig {
+  // Default false. Set to true to stop sharing all telemetry with Google.
+  //
+  // Telemetry sharing with Google is also disabled when the AdTech's own telemetry collection is disabled.
+  bool disable = 1;
+
+  /*
+   * Metric Selection Logic:
+   *
+   * There exists a pre-selected list of metrics that are shared with Google. Below are some options that one can set to
+   * customize what is shared.
+   *
+   * The selection process follows a specific order of precedence:
+   *
+   * 1. disable (Highest Precedence):
+   *    - If 'disable' is true, no metrics are shared, including the preselected list.
+   *
+   * 2. override_metrics:
+   *    - If 'override_metrics' is set (non-empty), it completely overrides the 'additional_metrics' and 'omitted_metrics' fields.
+   *    - Only metrics explicitly listed in 'override_metrics' will be shared.
+   *
+   * 3. additional_metrics and omitted_metrics (only considered if 'disable' is false and 'override_metrics' is empty):
+   *    - Start with a pre-defined (default) list of metrics.
+   *    - Add metrics specified in 'additional_metrics' to the default list.
+   *    - Remove metrics specified in 'omitted_metrics' from the combined list.
+   *    - If a metric is present in both 'additional_metrics' and 'omitted_metrics', it will be omitted (omitted_metrics takes precedence).
+   *
+   * In essence:
+   * - If 'disable' is true: No metrics are shared.
+   * - Else if 'override_metrics' is set: Only metrics in 'override_metrics' are shared.
+   * - Else: Start with a default list, add 'additional_metrics', then remove 'omitted_metrics'.
+   *
+   * This config supports regex full match. For example, if the pattern is "metric.*", then metrics with name such as
+   * "metric_one", "metric.one", "metricOne" will be shared.
+   */
+
+  // Default empty.
+  // If specified, ONLY metrics specified in this list will be shared with Google. This will override metrics specified in omitted_metrics.
+  repeated string override_metrics = 2;
+
+  // Default empty.
+  // If specified, additional metrics that are not part of the pre-defined list of metrics will be shared with Google.
+  repeated string additional_metrics = 3;
+
+  // Default empty.
+  // If specified, metric names in this list will be omitted from sharing w/ Google.
+  repeated string omitted_metrics = 4;
 }

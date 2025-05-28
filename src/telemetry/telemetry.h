@@ -19,6 +19,7 @@
 
 #include <functional>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,7 @@
 #include "opentelemetry/sdk/metrics/meter.h"
 #include "opentelemetry/sdk/metrics/meter_provider.h"
 #include "opentelemetry/sdk/trace/tracer.h"
+#include "src/telemetry/flag/config.pb.h"
 
 namespace privacy_sandbox::server_common {
 
@@ -56,6 +58,28 @@ std::unique_ptr<opentelemetry::metrics::MeterProvider> ConfigurePrivateMetrics(
     opentelemetry::sdk::resource::Resource resource,
     const opentelemetry::sdk::metrics::PeriodicExportingMetricReaderOptions&
         options,
+    absl::optional<std::string> collector_endpoint = absl::nullopt);
+
+// Add a MetricReader to an existing SDK MeterProvider for metrics export to
+// Google.
+void ConfigureGoogleMetrics(
+    opentelemetry::sdk::metrics::MeterProvider* provider,
+    telemetry::GoogleTelemetryConfig google_config,
+    const std::set<std::string>& available_metrics,
+    const std::set<std::string>& default_metrics,
+    std::string google_collector_endpoint);
+
+// Same as `ConfigurePrivateMetrics`, but also add a MetricReader to the created
+// SDK MeterProvider for metrics export to Google.
+std::unique_ptr<opentelemetry::metrics::MeterProvider>
+ConfigurePrivateMetricsWithGoogleMetrics(
+    opentelemetry::sdk::resource::Resource resource,
+    const opentelemetry::sdk::metrics::PeriodicExportingMetricReaderOptions&
+        options,
+    telemetry::GoogleTelemetryConfig google_config,
+    const std::set<std::string>& available_metrics,
+    const std::set<std::string>& default_metrics,
+    std::string google_collector_endpoint,
     absl::optional<std::string> collector_endpoint = absl::nullopt);
 
 // Must be called to initialize tracing functionality.
