@@ -39,6 +39,14 @@ class MockInstanceClientProvider : public InstanceClientProviderInterface {
       (override, noexcept));
 
   MOCK_METHOD(
+      absl::Status, GetCurrentInstanceNamespace,
+      ((core::AsyncContext<
+          cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceRequest,
+          cmrt::sdk::instance_service::v1::
+              GetCurrentInstanceNamespaceResponse>&)),
+      (override, noexcept));
+
+  MOCK_METHOD(
       absl::Status, GetTagsByResourceName,
       ((core::AsyncContext<
           cmrt::sdk::instance_service::v1::GetTagsByResourceNameRequest,

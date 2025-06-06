@@ -34,6 +34,10 @@
 #include "src/public/core/test_execution_result_matchers.h"
 
 using google::cmrt::sdk::instance_service::v1::
+    GetCurrentInstanceNamespaceRequest;
+using google::cmrt::sdk::instance_service::v1::
+    GetCurrentInstanceNamespaceResponse;
+using google::cmrt::sdk::instance_service::v1::
     GetCurrentInstanceResourceNameRequest;
 using google::cmrt::sdk::instance_service::v1::
     GetCurrentInstanceResourceNameResponse;
@@ -77,6 +81,9 @@ using ::testing::UnorderedElementsAre;
 namespace {
 constexpr std::string_view kURIForProjectId =
     "http://metadata.google.internal/computeMetadata/v1/project/project-id";
+constexpr std::string_view kURIForNumericProjectId =
+    "http://metadata.google.internal/computeMetadata/v1/project/"
+    "numeric-project-id";
 constexpr std::string_view kURIForInstanceId =
     "http://metadata.google.internal/computeMetadata/v1/instance/id";
 constexpr std::string_view kURIForInstanceZone =
@@ -84,6 +91,7 @@ constexpr std::string_view kURIForInstanceZone =
 constexpr std::string_view kMetadataFlavorHeaderKey = "Metadata-Flavor";
 constexpr std::string_view kMetadataFlavorHeaderValue = "Google";
 constexpr std::string_view kProjectIdResult = "123456";
+constexpr std::string_view kNumericProjectIdResult = "654321";
 constexpr std::string_view kZoneResult = "projects/123456/zones/us-central1-c";
 constexpr std::string_view kInstanceIdResult = "1234567";
 constexpr std::string_view kInstanceResourceName =
@@ -322,6 +330,118 @@ TEST_F(GcpInstanceClientProviderTest, FailedToGetCurrentInstanceResourceName) {
   done.WaitForNotification();
 }
 
+TEST_F(GcpInstanceClientProviderTest, GetCurrentInstanceNamespace) {
+  EXPECT_CALL(http1_client_, PerformRequest)
+      .Times(2)
+      .WillRepeatedly([=](AsyncContext<HttpRequest, HttpResponse>& context) {
+        const auto& request = *context.request;
+
+        EXPECT_EQ(request.method, HttpMethod::GET);
+        EXPECT_THAT(
+            request.headers,
+            Pointee(UnorderedElementsAre(
+                Pair(kMetadataFlavorHeaderKey, kMetadataFlavorHeaderValue))));
+
+        context.response = std::make_shared<HttpResponse>();
+        if (*request.path == kURIForProjectId) {
+          context.response->body =
+              std::make_shared<std::string>(kProjectIdResult);
+        }
+        if (*request.path == kURIForNumericProjectId) {
+          context.response->body =
+              std::make_shared<std::string>(kNumericProjectIdResult);
+        }
+        context.Finish(SuccessExecutionResult());
+        return SuccessExecutionResult();
+      });
+
+  absl::Notification done;
+  AsyncContext<GetCurrentInstanceNamespaceRequest,
+               GetCurrentInstanceNamespaceResponse>
+      context(std::make_shared<GetCurrentInstanceNamespaceRequest>(),
+              [&](AsyncContext<GetCurrentInstanceNamespaceRequest,
+                               GetCurrentInstanceNamespaceResponse>& context) {
+                ASSERT_SUCCESS(context.result);
+                EXPECT_THAT(context.response->project_id(),
+                            StrEq(kProjectIdResult));
+                EXPECT_THAT(context.response->numeric_project_id(),
+                            StrEq(kNumericProjectIdResult));
+                done.Notify();
+              });
+
+  EXPECT_TRUE(instance_provider_.GetCurrentInstanceNamespace(context).ok());
+  done.WaitForNotification();
+}
+
+TEST_F(GcpInstanceClientProviderTest,
+       FailedToGetCurrentInstanceNamespaceOnlyGotOneResult) {
+  EXPECT_CALL(http1_client_, PerformRequest)
+      .Times(2)
+      .WillRepeatedly([=](AsyncContext<HttpRequest, HttpResponse>& context) {
+        const auto& request = *context.request;
+
+        EXPECT_EQ(request.method, HttpMethod::GET);
+        EXPECT_THAT(
+            request.headers,
+            Pointee(UnorderedElementsAre(
+                Pair(kMetadataFlavorHeaderKey, kMetadataFlavorHeaderValue))));
+
+        context.response = std::make_shared<HttpResponse>();
+        if (*request.path == kURIForProjectId) {
+          context.result = FailureExecutionResult(SC_UNKNOWN);
+        }
+        if (*request.path == kURIForNumericProjectId) {
+          context.response->body =
+              std::make_shared<std::string>(kNumericProjectIdResult);
+          context.result = SuccessExecutionResult();
+        }
+        context.Finish();
+        return SuccessExecutionResult();
+      });
+
+  absl::Notification done;
+  AsyncContext<GetCurrentInstanceNamespaceRequest,
+               GetCurrentInstanceNamespaceResponse>
+      context(std::make_shared<GetCurrentInstanceNamespaceRequest>(),
+              [&](AsyncContext<GetCurrentInstanceNamespaceRequest,
+                               GetCurrentInstanceNamespaceResponse>& context) {
+                EXPECT_THAT(context.result,
+                            ResultIs(FailureExecutionResult(SC_UNKNOWN)));
+                done.Notify();
+              });
+
+  EXPECT_TRUE(instance_provider_.GetCurrentInstanceNamespace(context).ok());
+  done.WaitForNotification();
+}
+
+TEST_F(GcpInstanceClientProviderTest, FailedToGetCurrentInstanceNamespace) {
+  EXPECT_CALL(http1_client_, PerformRequest)
+      .WillOnce([=](AsyncContext<HttpRequest, HttpResponse>& context) {
+        const auto& request = *context.request;
+
+        EXPECT_EQ(request.method, HttpMethod::GET);
+        EXPECT_THAT(
+            request.headers,
+            Pointee(UnorderedElementsAre(
+                Pair(kMetadataFlavorHeaderKey, kMetadataFlavorHeaderValue))));
+        return FailureExecutionResult(SC_UNKNOWN);
+      });
+
+  absl::Notification done;
+  AsyncContext<GetCurrentInstanceNamespaceRequest,
+               GetCurrentInstanceNamespaceResponse>
+      context(std::make_shared<GetCurrentInstanceNamespaceRequest>(),
+              [&](AsyncContext<GetCurrentInstanceNamespaceRequest,
+                               GetCurrentInstanceNamespaceResponse>& context) {
+                EXPECT_THAT(context.result,
+                            ResultIs(FailureExecutionResult(SC_UNKNOWN)));
+                done.Notify();
+              });
+
+  EXPECT_FALSE(instance_provider_.GetCurrentInstanceNamespace(context).ok());
+  done.WaitForNotification();
+}
+
 TEST_F(GcpInstanceClientProviderTest, GetInstanceDetailsSyncSuccess) {
   EXPECT_CALL(authorizer_provider_, GetSessionToken)
       .WillOnce([=](AsyncContext<GetSessionTokenRequest,
@@ -390,7 +510,23 @@ TEST_F(GcpInstanceClientProviderTest, GetInstanceDetailsSyncSuccess) {
               "fingerprint": "IR29OyjoQ88=",
               "stackType": "IPV4_ONLY"
             }
-          ]
+          ],
+          "serviceAccounts": {
+            "default": {
+              "aliases": [
+                "default"
+              ],
+              "email": "default@cpio.iam.gserviceaccount.com",
+              "scopes": []
+            },
+            "foo@cpio.iam.gserviceaccount.com": {
+              "aliases": [
+                "foo"
+              ],
+              "email": "foo@cpio.iam.gserviceaccount.com",
+              "scopes": []
+            }
+          }
         }
       )""";
 
@@ -421,6 +557,7 @@ TEST_F(GcpInstanceClientProviderTest, GetInstanceDetailsSyncSuccess) {
   EXPECT_EQ(details.networks(0).private_ipv4_address(), "10.10.0.99");
   EXPECT_EQ(details.networks(1).public_ipv4_address(), "255.255.255.02");
   EXPECT_EQ(details.networks(1).private_ipv4_address(), "10.125.0.53");
+  EXPECT_EQ(details.service_account(), "default@cpio.iam.gserviceaccount.com");
 
   EXPECT_THAT(details.labels(),
               UnorderedElementsAre(Pair("test-label-1", "test-value-1"),
@@ -479,7 +616,23 @@ TEST_F(GcpInstanceClientProviderTest, GetInstanceDetailsAccessConfigLoop) {
               "fingerprint": "Hb2S=",
               "stackType": "IPV4_ONLY"
             }
-          ]
+          ],
+          "serviceAccounts": {
+            "default": {
+              "aliases": [
+                "default"
+              ],
+              "email": "default@cpio.iam.gserviceaccount.com",
+              "scopes": []
+            },
+            "foo@cpio.iam.gserviceaccount.com": {
+              "aliases": [
+                "foo"
+              ],
+              "email": "foo@cpio.iam.gserviceaccount.com",
+              "scopes": []
+            }
+          }
         }
       )""";
 
@@ -508,6 +661,7 @@ TEST_F(GcpInstanceClientProviderTest, GetInstanceDetailsAccessConfigLoop) {
   EXPECT_EQ(details.networks().size(), 1);
   EXPECT_EQ(details.networks(0).private_ipv4_address(), "10.10.0.99");
   EXPECT_EQ(details.networks(0).public_ipv4_address(), "255.255.255.02");
+  EXPECT_EQ(details.service_account(), "default@cpio.iam.gserviceaccount.com");
 }
 
 TEST_F(GcpInstanceClientProviderTest,
@@ -588,7 +742,23 @@ TEST_F(GcpInstanceClientProviderTest, GetInstanceDetailsSuccess) {
               "fingerprint": "Hb2S=",
               "stackType": "IPV4_ONLY"
             }
-          ]
+          ],
+          "serviceAccounts": {
+            "default": {
+              "aliases": [
+                "default"
+              ],
+              "email": "default@cpio.iam.gserviceaccount.com",
+              "scopes": []
+            },
+            "foo@cpio.iam.gserviceaccount.com": {
+              "aliases": [
+                "foo"
+              ],
+              "email": "foo@cpio.iam.gserviceaccount.com",
+              "scopes": []
+            }
+          }
         }
       )""";
 
@@ -623,6 +793,8 @@ TEST_F(GcpInstanceClientProviderTest, GetInstanceDetailsSuccess) {
                         StrEq("255.255.255.01"));
             EXPECT_THAT(details.networks(0).private_ipv4_address(),
                         StrEq("10.10.0.99"));
+            EXPECT_THAT(details.service_account(),
+                        StrEq("default@cpio.iam.gserviceaccount.com"));
             done.Notify();
           });
 
@@ -677,7 +849,22 @@ TEST_F(GcpInstanceClientProviderTest,
               "fingerprint": "Hb2S=",
               "stackType": "IPV4_ONLY"
             }
-          ]
+          ],
+          "serviceAccounts": {
+            "bar": {
+              "aliases": [
+                "bar"
+              ],
+              "scopes": []
+            },
+            "foo@cpio.iam.gserviceaccount.com": {
+              "aliases": [
+                "foo"
+              ],
+              "email": "foo@cpio.iam.gserviceaccount.com",
+              "scopes": []
+            }
+          }
         }
       )""";
 
@@ -715,6 +902,8 @@ TEST_F(GcpInstanceClientProviderTest,
                           .networks(0)
                           .private_ipv4_address(),
                       "10.10.0.99");
+            EXPECT_EQ(context.response->instance_details().service_account(),
+                      "foo@cpio.iam.gserviceaccount.com");
             done.Notify();
           });
 

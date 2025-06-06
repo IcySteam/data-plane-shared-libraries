@@ -43,6 +43,12 @@ class GcpInstanceClientProvider : public InstanceClientProviderInterface {
                              GetCurrentInstanceResourceNameResponse>&
           context) noexcept override;
 
+  absl::Status GetCurrentInstanceNamespace(
+      core::AsyncContext<
+          cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceRequest,
+          cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceResponse>&
+          context) noexcept override;
+
   absl::Status GetTagsByResourceName(
       core::AsyncContext<
           cmrt::sdk::instance_service::v1::GetTagsByResourceNameRequest,
@@ -88,10 +94,29 @@ class GcpInstanceClientProvider : public InstanceClientProviderInterface {
     bool got_failure ABSL_GUARDED_BY(got_failure_mu) = false;
   };
 
+  // The tracker for instance namespace fetching status.
+  struct InstanceNamespaceTracker {
+    // Project ID fetching response.
+    std::string project_id;
+    // Numeric project ID fetching response.
+    std::string numeric_project_id;
+    // Num of outstanding calls left.
+    absl::Mutex num_outstanding_calls_mu;
+    size_t num_outstanding_calls ABSL_GUARDED_BY(num_outstanding_calls_mu) = 2;
+    // Whether get_instance_namespace_context got failure result
+    absl::Mutex got_failure_mu;
+    bool got_failure ABSL_GUARDED_BY(got_failure_mu) = false;
+  };
+
   enum class ResourceType {
     kZone = 1,
     kInstanceId = 2,
     kProjectId = 3,
+  };
+
+  enum class InstanceNamespaceType {
+    kProjectId = 1,
+    kNumericProjectId = 2,
   };
 
   /**
@@ -136,6 +161,47 @@ class GcpInstanceClientProvider : public InstanceClientProviderInterface {
       std::shared_ptr<InstanceResourceNameTracker>
           instance_resource_name_tracker,
       ResourceType type) noexcept;
+
+  /**
+   * @brief Make http client request for instance namespace fetching.
+   *
+   * @param get_instance_namespace_context get current instance namespace
+   * context
+   * @param uri uri for http client PerformRequest()
+   * @param instance_namespace_tracker the tracker for instance namespace
+   * fetching.
+   * @param type the type of the instance namespace requested.
+   * @return core::ExecutionResult
+   */
+  core::ExecutionResult MakeHttpRequestsForInstanceNamespace(
+      core::AsyncContext<
+          cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceRequest,
+          cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceResponse>&
+          get_instance_namespace_context,
+      std::shared_ptr<std::string>& uri,
+      std::shared_ptr<InstanceNamespaceTracker> instance_namespace_tracker,
+      InstanceNamespaceType type) noexcept;
+
+  /**
+   * @brief Is called after http client PerformRequest() for instance namespace
+   * is completed.
+   *
+   * @param get_instance_namespace_context get current instance namespace
+   * context
+   * @param http_client_context http client PerformRequest() context
+   * @param instance_namespace_tracker the tracker for instance namespace
+   * fetching.
+   * @param type the type of the instance namespace requested.
+   */
+  void OnGetInstanceNamespace(
+      core::AsyncContext<
+          cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceRequest,
+          cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceResponse>&
+          get_instance_namespace_context,
+      core::AsyncContext<core::HttpRequest, core::HttpResponse>&
+          http_client_context,
+      std::shared_ptr<InstanceNamespaceTracker> instance_namespace_tracker,
+      InstanceNamespaceType type) noexcept;
 
   /**
    * @brief Is called after auth_token_provider GetSessionToken() for session
@@ -237,6 +303,7 @@ class GcpInstanceClientProvider : public InstanceClientProviderInterface {
   std::shared_ptr<std::string> http_uri_instance_private_ipv4_;
   std::shared_ptr<std::string> http_uri_instance_id_;
   std::shared_ptr<std::string> http_uri_project_id_;
+  std::shared_ptr<std::string> http_uri_numeric_project_id_;
   std::shared_ptr<std::string> http_uri_instance_zone_;
 };
 }  // namespace google::scp::cpio::client_providers

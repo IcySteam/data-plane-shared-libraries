@@ -28,6 +28,10 @@
 #include "src/public/cpio/proto/instance_service/v1/instance_service.pb.h"
 
 using google::cmrt::sdk::instance_service::v1::
+    GetCurrentInstanceNamespaceRequest;
+using google::cmrt::sdk::instance_service::v1::
+    GetCurrentInstanceNamespaceResponse;
+using google::cmrt::sdk::instance_service::v1::
     GetCurrentInstanceResourceNameRequest;
 using google::cmrt::sdk::instance_service::v1::
     GetCurrentInstanceResourceNameResponse;
@@ -99,6 +103,54 @@ TEST_F(InstanceClientTest, GetCurrentInstanceResourceNameFailure) {
                        GetCurrentInstanceResourceNameRequest(),
                        [&](const ExecutionResult result,
                            GetCurrentInstanceResourceNameResponse response) {
+                         EXPECT_THAT(
+                             result,
+                             ResultIs(FailureExecutionResult(SC_UNKNOWN)));
+                         finished.Notify();
+                       })
+                   .ok());
+  finished.WaitForNotification();
+}
+
+TEST_F(InstanceClientTest, GetCurrentInstanceNamespaceSuccess) {
+  EXPECT_CALL(client_.GetInstanceClientProvider(), GetCurrentInstanceNamespace)
+      .WillOnce(
+          [=](AsyncContext<GetCurrentInstanceNamespaceRequest,
+                           GetCurrentInstanceNamespaceResponse>& context) {
+            context.response =
+                std::make_shared<GetCurrentInstanceNamespaceResponse>();
+            context.Finish(SuccessExecutionResult());
+            return absl::OkStatus();
+          });
+
+  absl::Notification finished;
+  EXPECT_TRUE(client_
+                  .GetCurrentInstanceNamespace(
+                      GetCurrentInstanceNamespaceRequest(),
+                      [&](const ExecutionResult result,
+                          GetCurrentInstanceNamespaceResponse response) {
+                        EXPECT_THAT(result, IsSuccessful());
+                        finished.Notify();
+                      })
+                  .ok());
+  finished.WaitForNotification();
+}
+
+TEST_F(InstanceClientTest, GetCurrentInstanceNamespaceFailure) {
+  EXPECT_CALL(client_.GetInstanceClientProvider(), GetCurrentInstanceNamespace)
+      .WillOnce(
+          [=](AsyncContext<GetCurrentInstanceNamespaceRequest,
+                           GetCurrentInstanceNamespaceResponse>& context) {
+            context.Finish(FailureExecutionResult(SC_UNKNOWN));
+            return absl::UnknownError("");
+          });
+
+  absl::Notification finished;
+  EXPECT_FALSE(client_
+                   .GetCurrentInstanceNamespace(
+                       GetCurrentInstanceNamespaceRequest(),
+                       [&](const ExecutionResult result,
+                           GetCurrentInstanceNamespaceResponse response) {
                          EXPECT_THAT(
                              result,
                              ResultIs(FailureExecutionResult(SC_UNKNOWN)));

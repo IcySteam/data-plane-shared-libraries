@@ -58,6 +58,21 @@ class InstanceClientInterface {
           callback) noexcept = 0;
 
   /**
+   * @brief Get the current instance namespace.
+   *
+   * @param request request for the call.
+   * @param callback callback will be triggered when the call completes
+   * including when the call fails.
+   * @return absl::Status scheduling result returned synchronously.
+   */
+  virtual absl::Status GetCurrentInstanceNamespace(
+      cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceRequest
+          request,
+      Callback<
+          cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceResponse>
+          callback) noexcept = 0;
+
+  /**
    * @brief Gets all tags for the give resource.
    *
    * @param request request for the call.

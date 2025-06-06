@@ -52,6 +52,13 @@ class InstanceClient : public InstanceClientInterface {
                    GetCurrentInstanceResourceNameResponse>
           callback) noexcept override;
 
+  absl::Status GetCurrentInstanceNamespace(
+      cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceRequest
+          request,
+      Callback<
+          cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceResponse>
+          callback) noexcept override;
+
   absl::Status GetTagsByResourceName(
       cmrt::sdk::instance_service::v1::GetTagsByResourceNameRequest request,
       Callback<cmrt::sdk::instance_service::v1::GetTagsByResourceNameResponse>

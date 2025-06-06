@@ -26,6 +26,10 @@
 #include "src/public/cpio/proto/instance_service/v1/instance_service.pb.h"
 
 using google::cmrt::sdk::instance_service::v1::
+    GetCurrentInstanceNamespaceRequest;
+using google::cmrt::sdk::instance_service::v1::
+    GetCurrentInstanceNamespaceResponse;
+using google::cmrt::sdk::instance_service::v1::
     GetCurrentInstanceResourceNameRequest;
 using google::cmrt::sdk::instance_service::v1::
     GetCurrentInstanceResourceNameResponse;
@@ -56,6 +60,17 @@ absl::Status InstanceClient::GetCurrentInstanceResourceName(
                  GetCurrentInstanceResourceNameResponse>(
       absl::bind_front(
           &InstanceClientProviderInterface::GetCurrentInstanceResourceName,
+          instance_client_provider_),
+      request, callback);
+}
+
+absl::Status InstanceClient::GetCurrentInstanceNamespace(
+    GetCurrentInstanceNamespaceRequest request,
+    Callback<GetCurrentInstanceNamespaceResponse> callback) noexcept {
+  return Execute<GetCurrentInstanceNamespaceRequest,
+                 GetCurrentInstanceNamespaceResponse>(
+      absl::bind_front(
+          &InstanceClientProviderInterface::GetCurrentInstanceNamespace,
           instance_client_provider_),
       request, callback);
 }

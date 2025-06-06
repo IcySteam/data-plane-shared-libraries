@@ -41,6 +41,10 @@
 #include "gcp_instance_client_utils.h"
 
 using google::cmrt::sdk::instance_service::v1::
+    GetCurrentInstanceNamespaceRequest;
+using google::cmrt::sdk::instance_service::v1::
+    GetCurrentInstanceNamespaceResponse;
+using google::cmrt::sdk::instance_service::v1::
     GetCurrentInstanceResourceNameRequest;
 using google::cmrt::sdk::instance_service::v1::
     GetCurrentInstanceResourceNameResponse;
@@ -69,6 +73,8 @@ using google::scp::core::common::kZeroUuid;
 using google::scp::core::errors::
     SC_GCP_INSTANCE_CLIENT_INSTANCE_DETAILS_RESPONSE_MALFORMED;
 using google::scp::core::errors::
+    SC_GCP_INSTANCE_CLIENT_INVALID_INSTANCE_NAMESPACE_TYPE;
+using google::scp::core::errors::
     SC_GCP_INSTANCE_CLIENT_INVALID_INSTANCE_RESOURCE_TYPE;
 using google::scp::core::errors::
     SC_GCP_INSTANCE_CLIENT_PROVIDER_SERVICE_UNAVAILABLE;
@@ -92,6 +98,9 @@ constexpr std::string_view kURIForInstanceZone =
     "http://metadata.google.internal/computeMetadata/v1/instance/zone";
 constexpr std::string_view kURIForProjectId =
     "http://metadata.google.internal/computeMetadata/v1/project/project-id";
+constexpr std::string_view kURIForNumericProjectId =
+    "http://metadata.google.internal/computeMetadata/v1/project/"
+    "numeric-project-id";
 constexpr std::string_view kMetadataFlavorHeaderKey = "Metadata-Flavor";
 constexpr std::string_view kMetadataFlavorHeaderValue = "Google";
 
@@ -110,6 +119,9 @@ constexpr std::string_view kAuthorizationHeaderKey = "Authorization";
 constexpr std::string_view kBearerTokenPrefix = "Bearer ";
 constexpr std::string_view kInstanceDetailsJsonIdKey = "id";
 constexpr std::string_view kNetworkInterfacesKey = "networkInterfaces";
+constexpr std::string_view kServiceAccountsKey = "serviceAccounts";
+constexpr std::string_view kDefaultServiceAccountKey = "default";
+constexpr std::string_view kServiceAccountEmailKey = "email";
 constexpr std::string_view kPrivateIpKey = "networkIP";
 constexpr std::string_view kAccessConfigs = "accessConfigs";
 constexpr std::string_view kPublicIpKey = "natIP";
@@ -131,11 +143,12 @@ constexpr std::string_view kNextPageToken = "nextPageToken";
 
 // Returns a pair of iterators - one to the beginning, one to the end.
 const auto& GetRequiredFieldsForInstanceDetails() {
-  static char const* components[2];
+  static char const* components[3];
   using iterator_type = decltype(std::cbegin(components));
   static std::pair<iterator_type, iterator_type> iterator_pair = []() {
     components[0] = kInstanceDetailsJsonIdKey.data();
     components[1] = kNetworkInterfacesKey.data();
+    components[2] = kServiceAccountsKey.data();
     return std::make_pair(std::cbegin(components), std::cend(components));
   }();
   return iterator_pair;
@@ -168,6 +181,8 @@ GcpInstanceClientProvider::GcpInstanceClientProvider(
           std::make_shared<std::string>(kURIForInstancePrivateIpv4Address)),
       http_uri_instance_id_(std::make_shared<std::string>(kURIForInstanceId)),
       http_uri_project_id_(std::make_shared<std::string>(kURIForProjectId)),
+      http_uri_numeric_project_id_(
+          std::make_shared<std::string>(kURIForNumericProjectId)),
       http_uri_instance_zone_(
           std::make_shared<std::string>(kURIForInstanceZone)) {}
 
@@ -353,6 +368,141 @@ void GcpInstanceClientProvider::OnGetInstanceResourceName(
     get_resource_name_context.response->set_instance_resource_name(
         resource_name);
     get_resource_name_context.Finish(SuccessExecutionResult());
+  }
+}
+
+absl::Status GcpInstanceClientProvider::GetCurrentInstanceNamespace(
+    AsyncContext<GetCurrentInstanceNamespaceRequest,
+                 GetCurrentInstanceNamespaceResponse>&
+        get_instance_namespace_context) noexcept {
+  auto instance_namespace_tracker =
+      std::make_shared<InstanceNamespaceTracker>();
+
+  if (ExecutionResult execution_result = MakeHttpRequestsForInstanceNamespace(
+          get_instance_namespace_context, http_uri_project_id_,
+          instance_namespace_tracker, InstanceNamespaceType::kProjectId);
+      !execution_result.Successful()) {
+    return absl::UnknownError(google::scp::core::errors::GetErrorMessage(
+        execution_result.status_code));
+  }
+
+  if (ExecutionResult execution_result = MakeHttpRequestsForInstanceNamespace(
+          get_instance_namespace_context, http_uri_numeric_project_id_,
+          instance_namespace_tracker, InstanceNamespaceType::kNumericProjectId);
+      !execution_result.Successful()) {
+    return absl::UnknownError(google::scp::core::errors::GetErrorMessage(
+        execution_result.status_code));
+  }
+
+  return absl::OkStatus();
+}
+
+ExecutionResult GcpInstanceClientProvider::MakeHttpRequestsForInstanceNamespace(
+    AsyncContext<GetCurrentInstanceNamespaceRequest,
+                 GetCurrentInstanceNamespaceResponse>&
+        get_instance_namespace_context,
+    std::shared_ptr<std::string>& uri,
+    std::shared_ptr<InstanceNamespaceTracker> instance_namespace_tracker,
+    InstanceNamespaceType type) noexcept {
+  auto http_request = std::make_shared<HttpRequest>();
+  http_request->method = HttpMethod::GET;
+  http_request->path = uri;
+  http_request->body = std::make_shared<std::string>();
+  http_request->headers = std::make_shared<core::HttpHeaders>();
+  http_request->headers->insert({std::string(kMetadataFlavorHeaderKey),
+                                 std::string(kMetadataFlavorHeaderValue)});
+
+  AsyncContext<HttpRequest, HttpResponse> http_context(
+      std::move(http_request),
+      std::bind(&GcpInstanceClientProvider::OnGetInstanceNamespace, this,
+                get_instance_namespace_context, std::placeholders::_1,
+                instance_namespace_tracker, type),
+      get_instance_namespace_context);
+
+  auto execution_result = http1_client_->PerformRequest(http_context);
+  if (!execution_result.Successful()) {
+    // If got_failure is false, then the other thread hasn't failed - we should
+    // be the ones to log and finish the context.
+    if (absl::MutexLock lock(&instance_namespace_tracker->got_failure_mu);
+        !instance_namespace_tracker->got_failure) {
+      instance_namespace_tracker->got_failure = true;
+      SCP_ERROR_CONTEXT(kGcpInstanceClientProvider,
+                        get_instance_namespace_context, execution_result,
+                        "Failed to perform http request to fetch instance "
+                        "namespace with uri %s",
+                        uri->c_str());
+      get_instance_namespace_context.Finish(execution_result);
+    }
+    return execution_result;
+  }
+
+  return SuccessExecutionResult();
+}
+
+void GcpInstanceClientProvider::OnGetInstanceNamespace(
+    AsyncContext<GetCurrentInstanceNamespaceRequest,
+                 GetCurrentInstanceNamespaceResponse>&
+        get_instance_namespace_context,
+    AsyncContext<HttpRequest, HttpResponse>& http_client_context,
+    std::shared_ptr<InstanceNamespaceTracker> instance_namespace_tracker,
+    InstanceNamespaceType type) noexcept {
+  // If got_failure is true, no need to process this request.
+  if (absl::MutexLock lock(&instance_namespace_tracker->got_failure_mu);
+      instance_namespace_tracker->got_failure) {
+    return;
+  }
+
+  auto result = http_client_context.result;
+  if (!result.Successful() || http_client_context.response->body == nullptr) {
+    // If got_failure is false, then the other thread hasn't failed - we should
+    // be the ones to log and finish the context.
+    if (absl::MutexLock lock(&instance_namespace_tracker->got_failure_mu);
+        !instance_namespace_tracker->got_failure) {
+      instance_namespace_tracker->got_failure = true;
+      SCP_ERROR_CONTEXT(kGcpInstanceClientProvider,
+                        get_instance_namespace_context, result,
+                        "Failed to perform http request to fetch instance "
+                        "namespace with uri %s",
+                        http_client_context.request->path->c_str());
+      get_instance_namespace_context.Finish(result);
+    }
+    return;
+  }
+
+  auto response_body = std::string(*http_client_context.response->body);
+
+  switch (type) {
+    case InstanceNamespaceType::kProjectId: {
+      instance_namespace_tracker->project_id = std::move(response_body);
+      break;
+    }
+    case InstanceNamespaceType::kNumericProjectId: {
+      instance_namespace_tracker->numeric_project_id = std::move(response_body);
+      break;
+    }
+    default: {
+      auto execution_result = FailureExecutionResult(
+          SC_GCP_INSTANCE_CLIENT_INVALID_INSTANCE_NAMESPACE_TYPE);
+      SCP_ERROR_CONTEXT(kGcpInstanceClientProvider,
+                        get_instance_namespace_context, execution_result,
+                        "Invalid instance namespace type %d.", type);
+      get_instance_namespace_context.Finish(execution_result);
+    }
+  }
+
+  int num_outstanding_calls;
+  {
+    absl::MutexLock lock(&instance_namespace_tracker->num_outstanding_calls_mu);
+    num_outstanding_calls = --instance_namespace_tracker->num_outstanding_calls;
+  }
+  if (num_outstanding_calls == 0) {
+    get_instance_namespace_context.response =
+        std::make_shared<GetCurrentInstanceNamespaceResponse>();
+    get_instance_namespace_context.response->set_project_id(
+        instance_namespace_tracker->project_id);
+    get_instance_namespace_context.response->set_numeric_project_id(
+        instance_namespace_tracker->numeric_project_id);
+    get_instance_namespace_context.Finish(SuccessExecutionResult());
   }
 }
 
@@ -669,6 +819,26 @@ absl::StatusOr<InstanceDetails> ParseInstanceDetails(
     auto& labels_proto = *instance_details.mutable_labels();
     for (json::iterator it = labels->begin(); it != labels->end(); ++it) {
       labels_proto[it.key()] = it.value().get<std::string>();
+    }
+  }
+  // Extract default service account email.
+  auto default_service_account =
+      instance[kServiceAccountsKey].find(kDefaultServiceAccountKey);
+  if (default_service_account != instance[kServiceAccountsKey].end()) {
+    if (default_service_account->contains(kServiceAccountEmailKey)) {
+      instance_details.set_service_account(
+          (*default_service_account)[kServiceAccountEmailKey]
+              .get<std::string>());
+    }
+  } else {
+    // If no default service account is explicitly specified, fall back to the
+    // first one with an email.
+    for (const auto& service_account : instance[kServiceAccountsKey]) {
+      if (service_account.contains(kServiceAccountEmailKey)) {
+        instance_details.set_service_account(
+            service_account[kServiceAccountEmailKey].get<std::string>());
+        break;
+      }
     }
   }
   return instance_details;

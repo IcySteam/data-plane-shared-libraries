@@ -23,6 +23,10 @@
 #include "src/public/core/interface/execution_result.h"
 
 using google::cmrt::sdk::instance_service::v1::
+    GetCurrentInstanceNamespaceRequest;
+using google::cmrt::sdk::instance_service::v1::
+    GetCurrentInstanceNamespaceResponse;
+using google::cmrt::sdk::instance_service::v1::
     GetCurrentInstanceResourceNameRequest;
 using google::cmrt::sdk::instance_service::v1::
     GetCurrentInstanceResourceNameResponse;
@@ -54,6 +58,13 @@ class NoopInstanceClientProvider : public InstanceClientProviderInterface {
 
   absl::Status GetCurrentInstanceResourceNameSync(
       std::string& /* resource_name */) noexcept override {
+    return absl::UnimplementedError("");
+  }
+
+  absl::Status GetCurrentInstanceNamespace(
+      AsyncContext<GetCurrentInstanceNamespaceRequest,
+                   GetCurrentInstanceNamespaceResponse>& /* context */) noexcept
+      override {
     return absl::UnimplementedError("");
   }
 

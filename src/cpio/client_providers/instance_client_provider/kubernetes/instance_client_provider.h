@@ -50,6 +50,12 @@ class KubernetesInstanceClientProvider
                              GetCurrentInstanceResourceNameResponse>&
           context) noexcept override;
 
+  absl::Status GetCurrentInstanceNamespace(
+      core::AsyncContext<
+          cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceRequest,
+          cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceResponse>&
+          context) noexcept override;
+
   absl::Status GetTagsByResourceName(
       core::AsyncContext<
           cmrt::sdk::instance_service::v1::GetTagsByResourceNameRequest,

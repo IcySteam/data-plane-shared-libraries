@@ -4,6 +4,8 @@
 ## Table of Contents
 
 - [src/public/cpio/proto/instance_service/v1/instance_service.proto](#src_public_cpio_proto_instance_service_v1_instance_service-proto)
+  - [GetCurrentInstanceNamespaceRequest](#google-cmrt-sdk-instance_service-v1-GetCurrentInstanceNamespaceRequest)
+  - [GetCurrentInstanceNamespaceResponse](#google-cmrt-sdk-instance_service-v1-GetCurrentInstanceNamespaceResponse)
   - [GetCurrentInstanceResourceNameRequest](#google-cmrt-sdk-instance_service-v1-GetCurrentInstanceResourceNameRequest)
   - [GetCurrentInstanceResourceNameResponse](#google-cmrt-sdk-instance_service-v1-GetCurrentInstanceResourceNameResponse)
   - [GetInstanceDetailsByResourceNameRequest](#google-cmrt-sdk-instance_service-v1-GetInstanceDetailsByResourceNameRequest)
@@ -23,6 +25,20 @@
 
 ## src/public/cpio/proto/instance_service/v1/instance_service.proto
 
+<a name="google-cmrt-sdk-instance_service-v1-GetCurrentInstanceNamespaceRequest"></a>
+
+### GetCurrentInstanceNamespaceRequest
+
+<a name="google-cmrt-sdk-instance_service-v1-GetCurrentInstanceNamespaceResponse"></a>
+
+### GetCurrentInstanceNamespaceResponse
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| result | [google.scp.core.common.proto.ExecutionResult](#google-scp-core-common-proto-ExecutionResult) |  |  |
+| project_id | [string](#string) |  |  |
+| numeric_project_id | [string](#string) |  |  |
+| account_number | [string](#string) |  |  |
 <a name="google-cmrt-sdk-instance_service-v1-GetCurrentInstanceResourceNameRequest"></a>
 
 ### GetCurrentInstanceResourceNameRequest
@@ -82,6 +98,7 @@
 | instance_id | [string](#string) |  |  |
 | networks | [InstanceNetwork](#google-cmrt-sdk-instance_service-v1-InstanceNetwork) | repeated |  |
 | labels | [InstanceDetails.LabelsEntry](#google-cmrt-sdk-instance_service-v1-InstanceDetails-LabelsEntry) | repeated |  |
+| service_account | [string](#string) |  |  |
 <a name="google-cmrt-sdk-instance_service-v1-InstanceDetails-LabelsEntry"></a>
 
 ### InstanceDetails.LabelsEntry

@@ -65,6 +65,12 @@ class AwsInstanceClientProvider : public InstanceClientProviderInterface {
                              GetCurrentInstanceResourceNameResponse>&
           context) noexcept override;
 
+  absl::Status GetCurrentInstanceNamespace(
+      core::AsyncContext<
+          cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceRequest,
+          cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceResponse>&
+          context) noexcept override;
+
   absl::Status GetTagsByResourceName(
       core::AsyncContext<
           cmrt::sdk::instance_service::v1::GetTagsByResourceNameRequest,
@@ -105,7 +111,7 @@ class AwsInstanceClientProvider : public InstanceClientProviderInterface {
    * resource id.
    * @param get_token_context the context of get session token.
    */
-  void OnGetSessionTokenCallback(
+  void OnGetSessionTokenCallbackForInstanceResourceName(
       core::AsyncContext<cmrt::sdk::instance_service::v1::
                              GetCurrentInstanceResourceNameRequest,
                          cmrt::sdk::instance_service::v1::
@@ -128,6 +134,38 @@ class AwsInstanceClientProvider : public InstanceClientProviderInterface {
                          cmrt::sdk::instance_service::v1::
                              GetCurrentInstanceResourceNameResponse>&
           get_resource_name_context,
+      core::AsyncContext<core::HttpRequest, core::HttpResponse>&
+          http_client_context) noexcept;
+
+  /**
+   * @brief Is called after auth_token_provider GetSessionToken() for session
+   * token is completed
+   *
+   * @param get_instance_namespace_context the context for getting current
+   * instance namespace.
+   * @param get_token_context the context of get session token.
+   */
+  void OnGetSessionTokenCallbackForInstanceNamespace(
+      core::AsyncContext<
+          cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceRequest,
+          cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceResponse>&
+          get_instance_namespace_context,
+      core::AsyncContext<GetSessionTokenRequest, GetSessionTokenResponse>&
+          get_token_context) noexcept;
+
+  /**
+   * @brief Is called after http client PerformRequest() for current instance
+   * namespace is completed.
+   *
+   * @param get_instance_namespace_context the context for getting current
+   * instance namespace.
+   * @param http_client_context the context for http_client PerformRequest().
+   */
+  void OnGetInstanceNamespaceCallback(
+      core::AsyncContext<
+          cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceRequest,
+          cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceResponse>&
+          get_instance_namespace_context,
       core::AsyncContext<core::HttpRequest, core::HttpResponse>&
           http_client_context) noexcept;
 

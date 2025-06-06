@@ -25,6 +25,8 @@ option cc_enable_arenas = true;
 service InstanceService {
   // Get the resource name of the current instance.
   rpc GetCurrentInstanceResourceName(GetCurrentInstanceResourceNameRequest) returns (GetCurrentInstanceResourceNameResponse) {}
+  // Get the namespace of the current instance.
+  rpc GetCurrentInstanceNamespace(GetCurrentInstanceNamespaceRequest) returns (GetCurrentInstanceNamespaceResponse) {}
   // Get the tags for a given resource name.
   rpc GetTagsByResourceName(GetTagsByResourceNameRequest) returns (GetTagsByResourceNameResponse) {}
   // Get instance details for a given instance resource name.
@@ -51,6 +53,21 @@ message GetCurrentInstanceResourceNameResponse {
   // For more information about GCP full resource name, see
   // https://cloud.google.com/iam/docs/full-resource-names
   string instance_resource_name = 2;
+}
+
+// Request to get the current instance namespace.
+message GetCurrentInstanceNamespaceRequest {}
+
+// Response of getting the current instance namespace.
+message GetCurrentInstanceNamespaceResponse {
+  // The execution result.
+  scp.core.common.proto.ExecutionResult result = 1;
+  // In GCP, this is the project ID of the project that the VM belongs to.
+  string project_id = 2;
+  // In GCP, this is the numeric project number (Gaia ID) of the project that the VM belongs to.
+  string numeric_project_id = 3;
+  // In AWS, this is the AWS account number used by the VM operator.
+  string account_number = 4;
 }
 
 // Request to get tags for a given resource name.
@@ -93,6 +110,12 @@ message InstanceDetails {
   // In AWS, they are the same as instance tags.
   // In GCP, they are the instance labels.
   map<string, string> labels = 3;
+  // The default service account associated with the VM.
+  //
+  // In GCP, this is the email of the default service account associated with the VM.
+  //
+  // In AWS, this is the InstanceProfileArn of the IAM role associated with the VM.
+  string service_account = 4;
 }
 
 // Response of fetching instance details for a given resource id.

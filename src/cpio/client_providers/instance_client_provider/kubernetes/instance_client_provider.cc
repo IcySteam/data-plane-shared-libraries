@@ -25,6 +25,10 @@
 #include "src/cpio/client_providers/interface/auth_token_provider_interface.h"
 
 using google::cmrt::sdk::instance_service::v1::
+    GetCurrentInstanceNamespaceRequest;
+using google::cmrt::sdk::instance_service::v1::
+    GetCurrentInstanceNamespaceResponse;
+using google::cmrt::sdk::instance_service::v1::
     GetCurrentInstanceResourceNameRequest;
 using google::cmrt::sdk::instance_service::v1::
     GetCurrentInstanceResourceNameResponse;
@@ -113,6 +117,14 @@ KubernetesInstanceClientProvider::GetCurrentInstanceResourceNameSync(
     std::string& resource_name) noexcept {
   // Not implemented.
   return absl::UnimplementedError("GetCurrentInstanceResourceNameSync");
+}
+
+absl::Status KubernetesInstanceClientProvider::GetCurrentInstanceNamespace(
+    AsyncContext<GetCurrentInstanceNamespaceRequest,
+                 GetCurrentInstanceNamespaceResponse>&
+        get_instance_namespace_context) noexcept {
+  // Not implemented.
+  return absl::UnimplementedError("GetCurrentInstanceNamespace");
 }
 
 absl::Status KubernetesInstanceClientProvider::GetTagsByResourceName(

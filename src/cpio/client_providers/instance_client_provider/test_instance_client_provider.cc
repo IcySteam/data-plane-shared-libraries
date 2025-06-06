@@ -24,6 +24,10 @@
 #include "src/public/core/interface/execution_result.h"
 
 using google::cmrt::sdk::instance_service::v1::
+    GetCurrentInstanceNamespaceRequest;
+using google::cmrt::sdk::instance_service::v1::
+    GetCurrentInstanceNamespaceResponse;
+using google::cmrt::sdk::instance_service::v1::
     GetCurrentInstanceResourceNameRequest;
 using google::cmrt::sdk::instance_service::v1::
     GetCurrentInstanceResourceNameResponse;
@@ -62,6 +66,12 @@ absl::Status TestInstanceClientProvider::GetInstanceDetailsByResourceNameSync(
 absl::Status TestInstanceClientProvider::GetCurrentInstanceResourceName(
     AsyncContext<GetCurrentInstanceResourceNameRequest,
                  GetCurrentInstanceResourceNameResponse>& context) noexcept {
+  return absl::OkStatus();
+}
+
+absl::Status TestInstanceClientProvider::GetCurrentInstanceNamespace(
+    AsyncContext<GetCurrentInstanceNamespaceRequest,
+                 GetCurrentInstanceNamespaceResponse>& context) noexcept {
   return absl::OkStatus();
 }
 

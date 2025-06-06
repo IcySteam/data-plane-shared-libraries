@@ -49,6 +49,10 @@ using Aws::EC2::Model::DescribeTagsOutcome;
 using Aws::EC2::Model::DescribeTagsRequest;
 using Aws::EC2::Model::Filter;
 using google::cmrt::sdk::instance_service::v1::
+    GetCurrentInstanceNamespaceRequest;
+using google::cmrt::sdk::instance_service::v1::
+    GetCurrentInstanceNamespaceResponse;
+using google::cmrt::sdk::instance_service::v1::
     GetCurrentInstanceResourceNameRequest;
 using google::cmrt::sdk::instance_service::v1::
     GetCurrentInstanceResourceNameResponse;
@@ -77,6 +81,8 @@ using google::scp::core::HttpResponse;
 using google::scp::core::SuccessExecutionResult;
 using google::scp::core::async_executor::aws::AwsAsyncExecutor;
 using google::scp::core::common::kZeroUuid;
+using google::scp::core::errors::
+    SC_AWS_INSTANCE_CLIENT_INSTANCE_NAMESPACE_RESPONSE_MALFORMED;
 using google::scp::core::errors::
     SC_AWS_INSTANCE_CLIENT_INSTANCE_RESOURCE_NAME_RESPONSE_MALFORMED;
 using google::scp::core::errors::SC_AWS_INSTANCE_CLIENT_INVALID_REGION_CODE;
@@ -196,9 +202,9 @@ absl::Status AwsInstanceClientProvider::GetCurrentInstanceResourceName(
   AsyncContext<GetSessionTokenRequest, GetSessionTokenResponse>
       get_token_context(
           std::make_shared<GetSessionTokenRequest>(),
-          absl::bind_front(
-              &AwsInstanceClientProvider::OnGetSessionTokenCallback, this,
-              get_resource_name_context),
+          absl::bind_front(&AwsInstanceClientProvider::
+                               OnGetSessionTokenCallbackForInstanceResourceName,
+                           this, get_resource_name_context),
           get_resource_name_context);
   if (const ExecutionResult execution_result =
           auth_token_provider_->GetSessionToken(get_token_context);
@@ -215,12 +221,13 @@ absl::Status AwsInstanceClientProvider::GetCurrentInstanceResourceName(
   return absl::OkStatus();
 }
 
-void AwsInstanceClientProvider::OnGetSessionTokenCallback(
-    AsyncContext<GetCurrentInstanceResourceNameRequest,
-                 GetCurrentInstanceResourceNameResponse>&
-        get_resource_name_context,
-    AsyncContext<GetSessionTokenRequest, GetSessionTokenResponse>&
-        get_token_context) noexcept {
+void AwsInstanceClientProvider::
+    OnGetSessionTokenCallbackForInstanceResourceName(
+        AsyncContext<GetCurrentInstanceResourceNameRequest,
+                     GetCurrentInstanceResourceNameResponse>&
+            get_resource_name_context,
+        AsyncContext<GetSessionTokenRequest, GetSessionTokenResponse>&
+            get_token_context) noexcept {
   if (!get_token_context.result.Successful()) {
     SCP_ERROR_CONTEXT(kAwsInstanceClientProvider, get_resource_name_context,
                       get_token_context.result,
@@ -308,6 +315,124 @@ void AwsInstanceClientProvider::OnGetInstanceResourceNameCallback(
       std::make_shared<GetCurrentInstanceResourceNameResponse>();
   get_resource_name_context.response->set_instance_resource_name(resource_name);
   get_resource_name_context.Finish(SuccessExecutionResult());
+}
+
+absl::Status AwsInstanceClientProvider::GetCurrentInstanceNamespace(
+    AsyncContext<GetCurrentInstanceNamespaceRequest,
+                 GetCurrentInstanceNamespaceResponse>&
+        get_instance_namespace_context) noexcept {
+  AsyncContext<GetSessionTokenRequest, GetSessionTokenResponse>
+      get_token_context(
+          std::make_shared<GetSessionTokenRequest>(),
+          absl::bind_front(&AwsInstanceClientProvider::
+                               OnGetSessionTokenCallbackForInstanceNamespace,
+                           this, get_instance_namespace_context),
+          get_instance_namespace_context);
+  if (const ExecutionResult execution_result =
+          auth_token_provider_->GetSessionToken(get_token_context);
+      !execution_result.Successful()) {
+    SCP_ERROR_CONTEXT(kAwsInstanceClientProvider,
+                      get_instance_namespace_context, execution_result,
+                      "Failed to get the session token for current instance.");
+    get_instance_namespace_context.Finish(execution_result);
+
+    return absl::UnknownError(google::scp::core::errors::GetErrorMessage(
+        execution_result.status_code));
+  }
+
+  return absl::OkStatus();
+}
+
+void AwsInstanceClientProvider::OnGetSessionTokenCallbackForInstanceNamespace(
+    AsyncContext<GetCurrentInstanceNamespaceRequest,
+                 GetCurrentInstanceNamespaceResponse>&
+        get_instance_namespace_context,
+    AsyncContext<GetSessionTokenRequest, GetSessionTokenResponse>&
+        get_token_context) noexcept {
+  if (!get_token_context.result.Successful()) {
+    SCP_ERROR_CONTEXT(kAwsInstanceClientProvider,
+                      get_instance_namespace_context, get_token_context.result,
+                      "Failed to get the access token.");
+    get_instance_namespace_context.Finish(get_token_context.result);
+    return;
+  }
+
+  auto signed_request = std::make_shared<HttpRequest>();
+  signed_request->path =
+      std::make_shared<std::string>(kAwsInstanceDynamicDataUrl);
+  signed_request->method = HttpMethod::GET;
+
+  const auto& access_token = *get_token_context.response->session_token;
+  signed_request->headers = std::make_shared<core::HttpHeaders>();
+  signed_request->headers->insert(
+      {std::string(kAuthorizationHeaderKey), access_token});
+
+  AsyncContext<HttpRequest, HttpResponse> http_context(
+      std::move(signed_request),
+      absl::bind_front(
+          &AwsInstanceClientProvider::OnGetInstanceNamespaceCallback, this,
+          get_instance_namespace_context),
+      get_instance_namespace_context);
+
+  auto execution_result = http1_client_->PerformRequest(http_context);
+  if (!execution_result.Successful()) {
+    SCP_ERROR_CONTEXT(
+        kAwsInstanceClientProvider, get_instance_namespace_context,
+        execution_result,
+        "Failed to perform http request to get the current instance "
+        "namespace.");
+    get_instance_namespace_context.Finish(execution_result);
+    return;
+  }
+}
+
+void AwsInstanceClientProvider::OnGetInstanceNamespaceCallback(
+    AsyncContext<GetCurrentInstanceNamespaceRequest,
+                 GetCurrentInstanceNamespaceResponse>&
+        get_instance_namespace_context,
+    AsyncContext<HttpRequest, HttpResponse>& http_client_context) noexcept {
+  if (!http_client_context.result.Successful()) {
+    SCP_ERROR_CONTEXT(kAwsInstanceClientProvider,
+                      get_instance_namespace_context,
+                      http_client_context.result,
+                      "Failed to get the current instance namespace.");
+    get_instance_namespace_context.Finish(http_client_context.result);
+    return;
+  }
+
+  auto malformed_failure = FailureExecutionResult(
+      SC_AWS_INSTANCE_CLIENT_INSTANCE_NAMESPACE_RESPONSE_MALFORMED);
+
+  json json_response;
+  try {
+    json_response = json::parse(*http_client_context.response->body);
+  } catch (...) {
+    SCP_ERROR_CONTEXT(
+        kAwsInstanceClientProvider, get_instance_namespace_context,
+        malformed_failure,
+        "Received http response could not be parsed into a JSON.");
+    get_instance_namespace_context.Finish(malformed_failure);
+    return;
+  }
+
+  if (!std::all_of(GetRequiredFieldsForInstanceDynamicData().first,
+                   GetRequiredFieldsForInstanceDynamicData().second,
+                   [&json_response](const char* const component) {
+                     return json_response.contains(component);
+                   })) {
+    SCP_ERROR_CONTEXT(
+        kAwsInstanceClientProvider, get_instance_namespace_context,
+        malformed_failure,
+        "Received http response doesn't contain the required fields.");
+    get_instance_namespace_context.Finish(malformed_failure);
+    return;
+  }
+
+  get_instance_namespace_context.response =
+      std::make_shared<GetCurrentInstanceNamespaceResponse>();
+  get_instance_namespace_context.response->set_account_number(
+      json_response[kAccountIdKey].get<std::string>());
+  get_instance_namespace_context.Finish(SuccessExecutionResult());
 }
 
 absl::Status AwsInstanceClientProvider::GetInstanceDetailsByResourceNameSync(
@@ -431,6 +556,10 @@ void AwsInstanceClientProvider::OnDescribeInstancesAsyncCallback(
   for (const auto& tag : target_instance.GetTags()) {
     labels_proto[tag.GetKey()] = tag.GetValue();
   }
+
+  // Get the InstanceProfileArn of the associated IAM role.
+  instance_details->set_service_account(
+      target_instance.GetIamInstanceProfile().GetArn().c_str());
 
   FinishContext(SuccessExecutionResult(), get_details_context,
                 *cpu_async_executor_);

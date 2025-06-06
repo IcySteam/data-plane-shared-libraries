@@ -45,6 +45,15 @@ class MockInstanceClient : public InstanceClientInterface {
       (noexcept, override));
 
   MOCK_METHOD(
+      absl::Status, GetCurrentInstanceNamespace,
+      (cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceRequest
+           request,
+       Callback<
+           cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceResponse>
+           callback),
+      (noexcept, override));
+
+  MOCK_METHOD(
       absl::Status, GetTagsByResourceName,
       (cmrt::sdk::instance_service::v1::GetTagsByResourceNameRequest request,
        Callback<cmrt::sdk::instance_service::v1::GetTagsByResourceNameResponse>

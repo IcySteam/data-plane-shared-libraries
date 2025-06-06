@@ -60,6 +60,18 @@ class InstanceClientProviderInterface {
       std::string& resource_name) noexcept = 0;
 
   /**
+   * @brief Get the current instance namespace.
+   *
+   * @param context context of the operation.
+   * @return absl::Status result of the operation.
+   */
+  virtual absl::Status GetCurrentInstanceNamespace(
+      core::AsyncContext<
+          cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceRequest,
+          cmrt::sdk::instance_service::v1::GetCurrentInstanceNamespaceResponse>&
+          context) noexcept = 0;
+
+  /**
    * @brief Get the Tags By Resource Name object
    *
    * @param context context of the operation.
